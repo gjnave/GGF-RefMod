@@ -1,0 +1,648 @@
+from __future__ import annotations
+import base64, html, json, os, shutil, socket, threading, time, uuid
+from pathlib import Path
+import gradio as gr
+import config as cfg
+import runtime
+import video_profile
+import video_loras
+import project_history
+import media_previews as previews
+from urllib.parse import quote
+from functools import lru_cache
+
+CSS=(cfg.APP/'assets/theme.css').read_text(encoding='utf-8')+'''
+.gradio-container {font-family: 'Segoe UI',Arial,sans-serif!important; max-width:1400px!important; padding:clamp(10px,2vw,24px)!important}
+.gradio-container :is(textarea,input:not([type]),input[type="text"],input[type="number"],input[type="password"],select) {font-size:16px}
+.ggf-hero-logo {width:96px;height:96px}.ggf-hero {grid-template-columns:1fr 280px 96px;padding:20px 24px}
+#activity {border:1px solid #344b6e;background:#111c2f;border-radius:10px;padding:12px 16px;min-height:52px}
+.main-action {min-height:54px!important;font-size:18px!important;font-weight:750!important}
+.status-note {color:#9db0cc;font-size:14px}.ggf-footer {color:#9db0cc;text-align:center;padding:16px}
+.model-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:10px}
+.model-card {background:#111c2f;border:1px solid #2a3b56;border-radius:10px;padding:14px;min-width:0}
+.model-card strong {color:#e8eef9}.model-card p {color:#9db0cc;margin:5px 0;overflow-wrap:anywhere;font-size:12px}
+.model-card .missing {color:#f5b942}.model-card .installed {color:#80dca5}
+.upload-previews {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:10px}
+.upload-previews figure {margin:0;padding:8px;border:1px solid #344b6e;border-radius:8px;background:#091425}
+.upload-previews img,.upload-previews video {width:100%;height:clamp(180px,26vw,300px);object-fit:contain;background:#07101f;display:block}
+.upload-previews audio {width:100%;display:block}.upload-previews figcaption {color:#e8eef9;overflow-wrap:anywhere;margin-top:6px}
+button:disabled {background:#25344a!important;color:#9db0cc!important}
+.gradio-container button:not([role="tab"]):hover {background:#274266!important;color:#e8eef9!important}
+.gradio-container button.primary:hover {background:#ffd16e!important;color:#091425!important}
+.live-dot {display:inline-block;width:10px;height:10px;border-radius:50%;background:#f5b942;margin-right:10px;animation:ggf-pulse 1s infinite alternate}
+@keyframes ggf-pulse {to{opacity:.25}}
+@media(max-width:680px){.ggf-hero{grid-template-columns:1fr 70px}.ggf-hero-logo{width:70px;height:70px}.ggf-hero-slogan{display:none}}
+'''
+RESTORE_JS='''() => { let key=localStorage.getItem('minimax-refmod-workspace'); if(!/^[a-f0-9]{32}$/.test(key||'')){key=crypto.randomUUID().replaceAll('-','');localStorage.setItem('minimax-refmod-workspace',key);} if(!window.__minimaxKeyHandler){window.__minimaxKeyHandler=true; document.addEventListener('keydown', e=>{if(e.ctrlKey && e.key==='Enter' && !e.repeat){const b=[...document.querySelectorAll('.main-action button,button.main-action')].find(x=>x.offsetParent!==null&&!x.disabled);if(b){e.preventDefault();b.click();}}});} return [key];}'''
+SERVERS=[]
+
+def theme():
+    values={}
+    colors={'body_background_fill':'#07101f','body_text_color':'#e8eef9','block_background_fill':'#111c2f','block_border_color':'#2a3b56','block_label_background_fill':'#111c2f','block_label_text_color':'#e8eef9','block_title_text_color':'#e8eef9','input_background_fill':'#091425','input_border_color':'#3a4f70','input_placeholder_color':'#9db0cc','button_primary_background_fill':'#f5b942','button_primary_text_color':'#091425','button_secondary_background_fill':'#192d47','button_secondary_text_color':'#e8eef9'}
+    for k,v in colors.items():values[k]=v;values[k+'_dark']=v
+    return gr.themes.Base().set(**values)
+
+def model_table():
+    names={'base':'Video model','encoder':'Text encoder','video_vae':'Video reference encoder','audio_vae':'Audio reference encoder','turbo':'8-step Turbo','fast_preview':'Fast Preview (optional)','upscaler':'Latent upscaler','refiner':'Video refiner','dmd':'Refinement acceleration'}
+    rows=[]
+    for m in displayed_models():
+        cls='missing' if m['status']=='Missing or incomplete' else 'installed'
+        rows.append(f'<div class="model-card"><strong>{names[m["model"]]}</strong><p class="{cls}">{m["status"]} · {m["GB"]} GB</p><p>{html.escape(m["file"])}</p></div>')
+    return '<div class="model-grid">'+''.join(rows)+'</div>'
+
+def displayed_models():
+    rows=cfg.model_status()
+    profile=video_profile.settings()
+    if profile['active']==video_profile.HYBRID:
+        try:
+            video_profile.linked_path(profile)
+            status='Linked · GrizzlyMax INT4 Hybrid'
+        except ValueError:
+            status='Missing or incomplete'
+        base=next(row for row in rows if row['model']=='base')
+        base.update(file=profile['path'],status=status,GB=round(video_profile.SIZE/1e9,2))
+    return rows
+
+def library():
+    return sorted(str(p.relative_to(cfg.LIBRARY)).replace('\\','/') for p in cfg.LIBRARY.rglob('*.safetensors'))
+
+def metadata(name):
+    from safetensors import safe_open
+    path=cfg.library_path(name)
+    with safe_open(str(path),framework='numpy') as f:
+        raw=f.metadata() or {};m=raw.get('refmod_meta',raw.get('audio_refmod_meta'))
+        if not m:raise ValueError('This file has no RefMod metadata.')
+        return json.loads(m)
+
+def reference_labels(names,strength=1):
+    counts={'image':0,'video':0,'audio':0};labels={'image':'Picture','video':'Video','audio':'Audio'};rows=[]
+    buttons=[]
+    if names and strength==0:
+        return 'No active references at strength 0.',gr.update(value='',visible=False)
+    for name in names or []:
+        try:
+            m=metadata(name)
+            members=m.get('refs',m.get('members',[])) if m.get('kind')=='bundle' else [m]
+            for ref in members:
+                kind=ref.get('kind','image')
+                if kind in counts:
+                    counts[kind]+=1
+                    label=f'{labels[kind]} {counts[kind]}'
+                    ref_name=ref.get('name',name)
+                    rows.append(f"<{label}> = {ref_name}")
+                    buttons.append(f'<button type="button" data-ref="{label}" title="{html.escape(str(ref_name),quote=True)}">{label}</button>')
+        except Exception as e:rows.append(str(e))
+    shortcuts='<span>Insert reference</span> '+ ' '.join(buttons) if buttons else ''
+    return '\n'.join(rows) or 'Select RefMods to see their prompt labels.',gr.update(value=shortcuts,visible=bool(buttons))
+
+def guarded(fn):
+    def run(*args,**kw):
+        try:return fn(*args,**kw)
+        except Exception as e:raise gr.Error(str(e)) from e
+    return run
+
+@guarded
+def create(token,media,audio,name,mode,concept,description,resolution,pool,latent_frames,refinement,max_tokens,max_frames,audio_seconds,audio_concept,layout):
+    if not media and not audio:raise ValueError('Add reference images/videos or an audio reference.')
+    if mode not in ('Full Reference','Compressed Reference'):raise ValueError('Choose a reference mode.')
+    if concept not in ('identity','clothing','style','pose_motion','background','generic'):raise ValueError('Choose a concept type.')
+    cfg.require_models((['video_vae'] if media else [])+(['audio_vae'] if audio else []))
+    req=dict(kind='create',media=media or [],audio=audio,name=cfg.safe_name(name),mode=mode,concept=concept,description=description,
+        resolution=cfg.numeric(resolution,256,2048,'Reference resolution',True),pool=cfg.numeric(pool,4,64,'Pooling grid',True),
+        latent_frames=cfg.numeric(latent_frames,1,256,'Latent frames',True),refinement=cfg.numeric(refinement,0,2000,'Refinement steps',True),
+        max_tokens=cfg.numeric(max_tokens,0,1048576,'Token budget',True),max_frames=cfg.numeric(max_frames,1,10000,'Input frames',True),
+        audio_seconds=cfg.numeric(audio_seconds,.1,600,'Audio seconds'),audio_concept=audio_concept,layout=layout)
+    runtime.start(token,req)
+    return 'Creating RefMod…',[],''
+
+@guarded
+def generate(token,prompt,selected,strength,retention,aspect,mp,duration,seed,preset,steps,upscale,upmp,refinesteps,first,last,batch,lora1='',weight1=1,lora2='',weight2=1,model='Use Settings'):
+    if not prompt.strip():raise ValueError('Describe the scene, motion, and sound.')
+    w,h=cfg.canvas(aspect,mp);uw,uh=cfg.canvas(aspect,upmp)
+    frames=cfg.frames_for(duration)
+    if upscale and uw*uh<=w*h:raise ValueError('Upscale megapixels must be larger than the working canvas.')
+    if len(selected or [])>8:raise ValueError('Select up to eight RefMods.')
+    paths=[str(cfg.library_path(n)) for n in selected or []]
+    strength=cfg.numeric(strength,0,1,'Reference strength');retention=cfg.numeric(retention,0,1,'Retention')
+    profile=video_profile.settings()
+    if model!='Use Settings':
+        if model not in (video_profile.INT8,video_profile.HYBRID):raise ValueError('Choose a video model.')
+        profile=dict(profile,active=model)
+    hybrid=profile['active']==video_profile.HYBRID
+    if hybrid:
+        video_profile.linked_path(profile)
+    adapter,nsteps,_,_=cfg.sampling_settings(preset,steps)
+    cfg.require_models(([] if hybrid else ['base'])+['encoder','video_vae','audio_vae']+([adapter] if adapter else [])+(['upscaler','dmd','refiner'] if upscale else []))
+    req=dict(kind='generate',video_profile=profile,prompt=prompt,mods=paths,strengths=[strength]*len(paths),retention=retention,width=w,height=h,frames=frames,
+        seed=cfg.seed_value(seed),preset=preset,steps=nsteps,upscale=bool(upscale),
+        up_width=uw,up_height=uh,refine_steps=cfg.numeric(refinesteps,1,8,'Refinement steps',True),first_frame=first,last_frame=last,
+        batch=cfg.numeric(batch,1,8,'Batch count',True))
+    req['loras']=video_loras.selection([(lora1,weight1),(lora2,weight2)])
+    controls=dict(prompt=prompt,selected=selected or [],aspect=aspect,mp=mp,duration=duration,seed_input=cfg.seed_input(seed),preset=preset,custom_steps=steps,upscale=upscale,
+                  strength=strength,upmp=upmp,model=model,loras=[(lora1,weight1),(lora2,weight2)])
+    req['form']=controls
+    runtime.start(token,req,controls)
+    return 'Video submitted. See Generation queue.',gr.skip(),gr.skip()
+
+def refresh_library(selected):
+    choices=library()
+    return gr.update(choices=choices,value=[x for x in selected or [] if x in choices])
+
+def lora_menus(first,second):
+    choices=video_loras.choices()
+    available={value for _,value in choices}
+    return [gr.update(choices=choices,value=value if value in available else '') for value in (first,second)]
+
+@guarded
+def link_lora(location,first,second,remote):
+    if remote:
+        raise ValueError('Link local files from the PC interface.')
+    path=video_loras.link(location or '')
+    if path not in (first,second):
+        if not first: first=path
+        elif not second: second=path
+    return *lora_menus(first,second),f'Linked {Path(path).name}.'
+
+def describe_imports(files):
+    from safetensors import safe_open
+    rows=[]
+    for file in files or []:
+        try:
+            with safe_open(str(file),framework='numpy') as f:
+                data=f.metadata() or {}
+                meta=json.loads(data.get('refmod_meta') or data['audio_refmod_meta'])
+                kind=meta.get('kind') or ('audio' if 'audio_refmod_meta' in data else 'image')
+                rows.append(f"{Path(file).name}: {kind} · {meta.get('name') or 'Unnamed reference'}")
+        except Exception:
+            rows.append(f'{Path(file).name}: could not read RefMod metadata.')
+    return gr.update(value='\n'.join(rows),visible=bool(rows))
+
+@guarded
+def import_mod(files):
+    if runtime.is_busy():raise ValueError('Wait for the active job before importing RefMods.')
+    from safetensors import safe_open
+    count=0
+    for file in files or []:
+        with safe_open(str(file),framework='numpy') as f:
+            data=f.metadata() or {}
+            if 'refmod_meta' not in data and 'audio_refmod_meta' not in data:raise ValueError(Path(file).name+' is not a RefMod file.')
+        target=cfg.LIBRARY/Path(file).name
+        if target.exists():target=cfg.LIBRARY/(target.stem+'_'+uuid.uuid4().hex[:8]+target.suffix)
+        shutil.copy2(file,target);count+=1
+    return f'Imported {count} RefMods. Refresh the library to select them.'
+
+@guarded
+def maintenance(token,action,profile,remote):
+    if remote:raise ValueError('Manage model files from the local PC interface.')
+    if profile==cfg.FAST_DOWNLOAD:
+        keys=['fast_preview']
+    elif profile=='RefMod creator — 5.8 GB':
+        keys=['video_vae','audio_vae']
+    else:
+        keys=[key for key in cfg.FILES if key!='fast_preview']
+    video=video_profile.settings()
+    use_hybrid=video['active']==video_profile.HYBRID and 'base' in keys and action in ('download','verify')
+    if use_hybrid:
+        video_profile.linked_path(video)
+        keys.remove('base')
+    runtime.start(token,dict(kind=action,keys=keys,verify_hybrid=video['path'] if use_hybrid else None))
+    return 'Model operation started. Progress appears above.'
+
+@guarded
+def start_model_link(token,location,family,remote,pick):
+    if remote:
+        raise ValueError('Change model settings on the local PC.')
+    if pick:
+        location=browse_models(remote,family)
+        if not isinstance(location,str):return gr.skip(),gr.skip(),gr.skip()
+    location=str(cfg.existing_model_location(location))
+    job=runtime.start(token,dict(kind='link',family=family,folder=location))
+    return location, f'Checking {location}. Large checkpoints can take several minutes to verify.',job
+
+def link_progress(token,job):
+    if not job:return [gr.skip()]*4
+    path=cfg.JOBS/job/'status.json'
+    state=json.loads(path.read_text(encoding='utf-8'))
+    if state['token']!=token or state['status'] in ('queued','running'):return [gr.skip()]*4
+    return state['stage'],'',video_profile.active_label(),model_table()
+
+@guarded
+def browse_models(remote,kind):
+    if remote:
+        raise ValueError('Browse for model folders on the local PC.')
+    import subprocess,sys
+    dialogs={
+        'lora':'filedialog.askopenfilename(parent=root,title="Choose a MiniMax H3 LoRA",filetypes=[("LoRA weights","*.safetensors")])',
+        'grizzly':'filedialog.askdirectory(parent=root,title="Select GrizzlyMax models folder")',
+        'standard':'filedialog.askdirectory(parent=root,title="Select existing MiniMax models folder")',
+    }
+    dialog=dialogs[kind]
+    picker=('import tkinter as tk; from tkinter import filedialog; '
+            'root=tk.Tk(); root.withdraw(); root.attributes("-topmost",True); '
+            f'print({dialog}); root.destroy()')
+    picked=subprocess.run([sys.executable,'-X','utf8','-c',picker],capture_output=True,text=True,
+                          encoding='utf-8',check=True,creationflags=subprocess.CREATE_NO_WINDOW)
+    return picked.stdout.strip() or gr.skip()
+
+def download_panel(state):
+    if not state or state['kind']!='download':
+        return ''
+    transfer=state.get('transfer')
+    if not transfer:
+        return html.escape(state['stage'])
+    done,total,speed=transfer['received'],transfer['total'],transfer['speed']
+    if speed:
+        minutes,seconds=divmod(round(max(0,total-done)/speed),60)
+        eta=f'{minutes}m {seconds:02d}s'
+    else:
+        eta='estimating'
+    name=html.escape(transfer['name'])
+    return (f'<div><strong>{name}</strong><br><progress style="width:100%" value="{done}" max="{total}" aria-label="Model download"></progress>'
+            f'<div>{done/1e9:.2f} / {total/1e9:.2f} GB ({100*done/total:.1f}%) · '
+            f'{speed/1e6:.1f} MB/s · ETA {eta}</div></div>')
+
+@guarded
+def resume_connection(token,remote):
+    if remote:
+        raise ValueError('Manage model downloads from the local PC interface.')
+    gr.Info(runtime.reconnect(token))
+
+def queue_view(token,previous):
+    rows=runtime.generation_list(token)
+    live=[];recent=[]
+    for row in rows:
+        title=html.escape(row['label'])
+        label=row['status'].capitalize()
+        if row['position']:
+            label=f"Waiting #{row['position']}"
+        links=[]
+        for i,file in enumerate(row.get('result',{}).get('files',[]),1):
+            if not Path(file).is_file():continue
+            href='./gradio_api/file='+quote(Path(file).as_posix(),safe='/:')
+            links.append(f'<a href="{href}" target="_blank" rel="noopener">Open video {i}</a>')
+        info=html.escape(row['stage']) if row['status']=='error' else ''
+        button=(f'<button type="button" data-remove="{row["id"]}" aria-label="Remove {title} from queue">Remove</button>' if row['position'] else '')
+        section=live if row['status'] in ('queued','running') else recent
+        section.append(f'<li><strong>{label}</strong><span>{title}</span>{button} {" ".join(links)} {info}</li>')
+    panel=('<ul>'+''.join(live)+'</ul>' if live else '<p>Queue is empty.</p>')
+    if recent:panel+='<details><summary>Recent submissions</summary><ul>'+''.join(recent)+'</ul></details>'
+    return (panel,panel) if panel!=previous else (gr.skip(),gr.skip())
+
+def remove_from_queue(token,event:gr.EventData):
+    try:gr.Info(runtime.cancel_waiting(token,event.job))
+    except ValueError as e:gr.Warning(str(e))
+    return queue_view(token,None)
+
+@guarded
+def inspect_project(token,key):
+    return gr.update(visible=True),project_history.details(project_history.project(token,key)),key
+
+@guarded
+def reuse_project(token,key):
+    p=project_history.project(token,key)
+    choices=library(); adapters=video_loras.choices()
+    v=project_history.reuse_values(p,choices,{path for _,path in adapters})
+    slots=[value for path,weight in v['slots'] for value in (gr.update(choices=adapters,value=path),weight)]
+    gr.Info('Settings loaded for one clip. Review them, then click Generate Video when ready.')
+    return (v['prompt'],gr.update(choices=choices,value=v['selected']),v['strength'],v['retention'],v['aspect'],v['mp'],v['duration'],
+            v['seed'],v['preset'],gr.update(value=v['steps'],visible=v['preset']=='custom'),v['upscale'],v['upmp'],v['refinesteps'],
+            *v['frames'],1,*slots,v['model'])
+
+def media_url(path):
+    return './gradio_api/file='+quote(Path(path).as_posix(),safe='/:')
+
+@lru_cache(maxsize=4096)
+def clip_poster(video,job_dir,index):
+    import av
+    poster=job_dir/f'gallery-{index}.jpg'
+    if poster.is_file():return media_url(poster)
+    try:
+        with av.open(video) as media:
+            frame=next(media.decode(video=0)).to_image()
+        frame.thumbnail((192,192))
+        temporary=poster.with_name(f'gallery-{uuid.uuid4().hex}.tmp')
+        frame.convert('RGB').save(temporary,format='JPEG',quality=83)
+        os.replace(temporary,poster)
+        return media_url(poster)
+    except (OSError,ValueError,StopIteration):
+        return ''
+
+def clip_gallery(token,previous,pinned=''):
+    clips=[]
+    for clip in runtime.workspace_clips(token):
+        job,index,_,file=clip
+        if len(clips)>=20 and pinned!=f'{job}-{index}':continue
+        if Path(file).is_file():clips.append(clip)
+    destination='bin' if cfg.read_settings()['recycle_videos'] is True else 'folder'
+    keys=[destination,[(job,index) for job,index,_,_ in clips]]
+    if keys==previous:return gr.skip(),gr.skip()
+    buttons=[]
+    for job,index,label,file in clips:
+        title=html.escape(f'{label} · Clip {index}',quote=True)
+        src=html.escape(media_url(file),quote=True)
+        poster=html.escape(clip_poster(file,cfg.JOBS/job,index),quote=True)
+        picture=f'<img loading="lazy" src="{poster}" alt="">' if poster else '▶'
+        buttons.append(f'<span class="clip-item"><button type="button" class="clip-tile" data-destination="{destination}" data-key="{job}-{index}" data-src="{src}" title="{title}" aria-label="Play {title}">{picture}</button><button type="button" class="clip-remove" aria-label="Delete {title}" title="Delete video">×</button></span>')
+    return ''.join(buttons),keys
+
+def delete_gallery_clip(token,event:gr.EventData):
+    try:
+        gr.Info(runtime.delete_clip(token,event.key,getattr(event,'destination',None)))
+    except (OSError,ValueError) as exc:
+        gr.Warning(f'Could not delete the clip: {exc}')
+    return clip_gallery(token,None,getattr(event,'pinned',''))
+
+def convert_to_gif(token,key,loop):
+    import gif_export
+    try:
+        path=gif_export.export(runtime.workspace_clip_path(token,key),loop=loop)
+    except (OSError,ValueError,IndexError) as exc:
+        raise gr.Error(f'GIF export failed: {exc}') from exc
+    url=html.escape(media_url(path),quote=True)
+    name=html.escape(path.name,quote=True)
+    return f'<a href="{url}" download="{name}">Download GIF</a> · {name}<details><summary>Preview GIF</summary><img src="{url}" alt="Exported animated GIF" style="max-width:100%"></details>'
+
+def poll(token,last_seen):
+    if not token:return [gr.skip()]*10
+    state=runtime.current(token);busy=runtime.is_busy()
+    create_btn=gr.update(interactive=not busy,value='Working…' if busy else 'Create RefMod')
+    generate_btn=gr.update(interactive=True,value='Add to queue' if busy else 'Generate Video')
+    transfer_ui=[download_panel(state),gr.update(interactive=bool(state and state.get('transfer') and not state.get('cancelled')))]
+    if not state:return ['Ready. Add references or open Settings to set up models.',create_btn,generate_btn,*([gr.skip()]*5),*transfer_ui]
+    elapsed=(state.get('finished') or time.time())-state['started']
+    progress=state.get('progress');step=f' · {progress[0]}/{progress[1]}' if progress else ''
+    dot='<span class="live-dot"></span>' if state['status']=='running' else ''
+    status=f"{dot}<strong>{html.escape(state['stage'])}</strong>{step} · {elapsed:.0f}s"
+    r=state['result']
+    files=[file for file in r.get('files',[]) if Path(file).is_file()]
+    marker=state['id']+state['status']+str(len(files))
+    if marker==last_seen or state['status'] in ('running','queued'):return [status,create_btn,generate_btn,*([gr.skip()]*5),*transfer_ui]
+    log=Path(state['job_dir'])/'worker.log'
+    return [status,create_btn,generate_btn,files,r.get('details',''),str(log) if log.is_file() else None,marker,model_table(),*transfer_ui]
+
+def restore(token):
+    saved=runtime.load_workspace(token);c=saved.get('controls',{})
+    request={}
+    job=saved.get('job','')
+    if job and Path(job).name==job:
+        request_path=cfg.JOBS/job/'request.json'
+        if request_path.is_file():request=json.loads(request_path.read_text(encoding='utf-8'))
+    creator=request if request.get('kind')=='create' else {}
+    frames=request if request.get('kind')=='generate' else {}
+    media=[p for p in creator.get('media',[]) if Path(p).is_file()]
+    slots=c.get('loras',[('',1),('',1)])
+    menus=lora_menus(slots[0][0],slots[1][0])
+    preset=cfg.saved_preset(c)
+    # Older workspaces stored the generated number, so only restore an explicit input.
+    return (token,c.get('prompt',''),gr.update(choices=library(),value=[x for x in c.get('selected',[]) if x in library()]),c.get('aspect','Portrait 9:16'),
+            c.get('mp',.5),c.get('duration',3),c.get('seed_input',''),preset,c.get('upscale',False),media or None,creator.get('audio'),creator.get('name',''),
+            creator.get('mode','Full Reference'),creator.get('concept','identity'),creator.get('description',''),frames.get('first_frame'),frames.get('last_frame'),
+            menus[0],slots[0][1],menus[1],slots[1][1],gr.update(value=c.get('custom_steps',20),visible=preset=='custom'),
+            c.get('model','Use Settings'),c.get('strength',1),frames.get('retention',1),c.get('upmp',1.2),frames.get('refine_steps',2),frames.get('batch',1))
+
+def save_network(enabled,username,password):
+    if runtime.is_busy():raise gr.Error('Finish or stop the active job first.')
+    if password and not username.strip():raise gr.Error('Enter a username when using a password.')
+    cfg.update_settings(phone_enabled=enabled,username=username.strip(),password=password)
+    return 'Saved. Restart with RUN.bat to apply phone access settings.'
+
+def stop_server(confirmed):
+    if not confirmed:raise gr.Error('Confirm that restarting requires RUN.bat on the PC.')
+    if runtime.is_busy():raise gr.Error('Finish or stop the active job first.')
+    def end():
+        time.sleep(1)
+        for server in SERVERS:server.close()
+        os._exit(0)
+    threading.Thread(target=end,daemon=True).start()
+    return 'Stopping both app interfaces. Restart with RUN.bat on the PC.'
+
+def build_ui(remote=False):
+    settings=cfg.read_settings();logo=base64.b64encode((cfg.APP/'assets/ggf-brain-logo.png').read_bytes()).decode()
+    missing=any(m['status']=='Missing or incomplete' for m in displayed_models())
+    with gr.Blocks(title='Minimax Refmod · Get Going Fast') as ui:
+        token=gr.State('');last_seen=gr.State('');browser_token=gr.Textbox(visible=False)
+        gr.HTML('<header class="ggf-hero"><div><div class="ggf-kicker">GET GOING FAST · LOCAL AI</div><h1>Minimax Refmod</h1><p>Create reusable references. Bring them into your next video.</p><nav class="ggf-links"><a href="https://getgoingfast.pro" target="_blank" rel="noopener">GetGoingFast.pro ↗</a><a href="https://youtube.com/@TheAIHobbyGuy" target="_blank" rel="noopener">TheAIHobbyGuy ↗</a></nav></div><div class="ggf-hero-slogan">Your Time Is Limited.<br><strong>Get Going Fast.</strong></div><img class="ggf-hero-logo" alt="Get Going Fast" src="data:image/png;base64,'+logo+'"></header>')
+        activity=gr.HTML('Ready. Set up models in Settings to begin.',elem_id='activity')
+        with gr.Tabs(selected='settings' if missing and not remote else 'create'):
+            with gr.Tab('Create RefMod',id='create'):
+                gr.Markdown('**1. Add references → 2. Name your RefMod → 3. Create.** Full Reference retains more detail. Compressed Reference reduces token cost and can lose identity detail.')
+                with gr.Row():
+                    with gr.Column():
+                        media=gr.File(file_count='multiple',file_types=list(previews.PICTURES+previews.VIDEOS),label='Reference images and videos',type='filepath',elem_id='ref-media')
+                        media_view=gr.HTML(elem_id='ref-media-preview')
+                        audio=gr.File(type='filepath',label='Optional audio reference',file_types=list(previews.AUDIO),elem_id='ref-audio')
+                        audio_view=gr.HTML(elem_id='ref-audio-preview')
+                    with gr.Column():
+                        name=gr.Textbox(label='RefMod name',placeholder='e.g. red_jacket or character_alex')
+                        mode=gr.Radio(['Full Reference','Compressed Reference'],value='Full Reference',label='Reference mode')
+                        concept=gr.Dropdown([('Identity','identity'),('Clothing','clothing'),('Style','style'),('Pose or motion','pose_motion'),('Background','background'),('General reference','generic')],value='identity',filterable=False,label='Reference purpose')
+                        description=gr.Textbox(label='Description',placeholder='What should this reference preserve?')
+                        make=gr.Button('Create RefMod',variant='primary',elem_classes='main-action')
+                        stop1=gr.Button('Stop')
+                        gr.Markdown('Saved RefMods appear in the Generate Video library. A reference guides the result; it does not guarantee exact identity or motion.')
+                with gr.Accordion('Creation settings',open=False):
+                    with gr.Row():
+                        resolution=gr.Slider(256,2048,value=1024,step=256,label='Reference resolution')
+                        max_frames=gr.Number(value=450,precision=0,label='Maximum input video frames')
+                        latent_frames=gr.Number(value=16,precision=0,label='Latent frame limit')
+                    with gr.Row():
+                        pool=gr.Slider(4,64,value=16,step=2,label='Compressed pooling grid',visible=False)
+                        refinement=gr.Slider(0,2000,value=500,step=50,label='Compressed refinement steps',visible=False)
+                        max_tokens=gr.Number(value=5120,precision=0,label='Token budget (0 = unlimited)')
+                    with gr.Row():
+                        audio_seconds=gr.Number(value=30,label='Audio reference seconds')
+                        audio_concept=gr.Dropdown([('Voice','voice'),('Singing','singing'),('Music style','music_style'),('Sound effects','sound_fx'),('Ambience','ambience')],value='voice',filterable=False,label='Audio purpose')
+                        layout=gr.Radio([('Separate files','separate_files'),('One bundle','bundle')],value='separate_files',label='Save format')
+            with gr.Tab('Generate Video',id='generate'):
+                gr.Markdown('**Select saved RefMods and describe the scene, movement, dialogue, and sound.** Use the reference labels below in your prompt. Ctrl+Enter starts the visible Create or Generate action.')
+                with gr.Row():
+                    with gr.Column():
+                        selected=gr.Dropdown(library(),multiselect=True,max_choices=8,label='RefMod library (choose up to 8)',info='Open the list or type to find a saved RefMod.',elem_id='refmod-library',value=[])
+                        refresh=gr.Button('Refresh library',size='sm')
+                        labels=gr.Textbox(label='Reference labels for your prompt',interactive=False,lines=3)
+                        shortcuts=gr.HTML('',visible=False,elem_id='prompt-shortcuts',js_on_load=(cfg.APP/'assets/prompt-shortcuts.js').read_text(encoding='utf-8'))
+                        prompt=gr.Textbox(label='Scene and sound',elem_id='scene-and-sound',lines=8,placeholder='The character from <Picture 1> walks through a rainy street. Gentle camera tracking. Footsteps and distant traffic.')
+                        with gr.Row():
+                            aspect=gr.Dropdown(['Portrait 9:16','Landscape 16:9','Square 1:1'],value='Portrait 9:16',filterable=False,label='Aspect ratio')
+                            duration=gr.Number(value=3,label='Duration in seconds')
+                        preset=gr.Radio([(v[0],k) for k,v in cfg.PRESETS.items()],value='turbo',label='Generation preset',info='Use Fast Preview for a quicker draft. Its optional adapter is available in Settings.')
+                        with gr.Accordion('LoRAs (optional)',open=False):
+                            gr.Markdown('Choose MiniMax H3 video LoRAs. Set strength to 0 to skip an adapter. Select Custom steps if you supply your own speed LoRA.')
+                            slots=[]
+                            for index in (1,2):
+                                with gr.Row():
+                                    slots.append(gr.Dropdown(video_loras.choices(),value='',label=f'LoRA {index}'))
+                                    slots.append(gr.Slider(-2,2,value=1,step=.05,label=f'LoRA {index} strength'))
+                            lora_refresh=gr.Button('Refresh LoRA list')
+                            with gr.Group(visible=not remote):
+                                lora_path=gr.Textbox(label='Local LoRA file')
+                                with gr.Row():
+                                    lora_browse=gr.Button('Browse for LoRA')
+                                    lora_link=gr.Button('Link LoRA')
+                                lora_message=gr.Textbox(label='LoRA link status',interactive=False)
+                        go=gr.Button('Generate Video',variant='primary',elem_classes='main-action')
+                        stop2=gr.Button('Stop current job')
+                    with gr.Column():
+                        count_options=''.join(f'<option value="{i}"{" selected" if i==20 else ""}>{i}</option>' for i in range(1,21))
+                        gr.HTML('<video controls playsinline preload="metadata" aria-label="Generated video"></video><div class="clip-caption" aria-live="polite">Completed videos appear here.</div>'
+                                f'<div class="clip-tools"><label><input type="checkbox" class="loop-playback"> Loop playback</label><label>Videos shown <select aria-label="Videos shown">{count_options}</select></label><button type="button" class="delete-current" hidden>× Delete current video</button></div>',elem_id='clip-player')
+                        with gr.Row():
+                            gif_button=gr.Button('Convert to GIF',size='sm',elem_id='convert-to-gif')
+                            gif_loop=gr.Checkbox(value=True,label='Loop GIF continuously')
+                        gif_result=gr.HTML('')
+                        gallery=gr.HTML('',elem_id='clip-gallery',js_on_load=(cfg.APP/'assets/clip-gallery.js').read_text(encoding='utf-8'))
+                        gallery_keys=gr.State(None)
+                        pinned_key=gr.Textbox(visible=False)
+                        with gr.Group(elem_id='queue-box'):
+                            gr.Markdown('### Generation queue')
+                            queue_panel=gr.HTML('<p>Queue is empty.</p>',elem_id='generation-queue',
+                                js_on_load="""element.addEventListener('click',event=>{const button=event.target.closest('button[data-remove]');if(button)trigger('click',{job:button.dataset.remove});});""")
+                            queue_marker=gr.State(None)
+                        inspect=gr.Button('View project details',elem_id='inspect-project',size='sm')
+                        gr.Markdown('Double-click a video or thumbnail to see how it was made.')
+                        inspected_key=gr.State('')
+                        with gr.Group(visible=False,elem_id='project-details') as project_panel:
+                            facts=gr.HTML()
+                            with gr.Row():
+                                reuse=gr.Button('Reuse these settings',variant='primary')
+                                dismiss=gr.Button('Close details')
+                with gr.Accordion('Video settings',open=False):
+                    run_model=gr.Dropdown(['Use Settings',video_profile.INT8,video_profile.HYBRID],value='Use Settings',label='Model for this generation',
+                                          info='A project can reuse its original model without changing your default.')
+                    with gr.Row():
+                        mp=gr.Slider(.1,1.0,value=.5,step=.05,label='Working megapixels')
+                        seed=gr.Textbox(value='',label='Seed',placeholder='Random',info='Leave blank for a new seed each run. Enter a number to reuse it.')
+                        steps=gr.Slider(1,100,value=20,step=1,label='Sampling steps',visible=False)
+                        batch=gr.Slider(1,8,value=1,step=1,label='Sequential videos')
+                    with gr.Row():
+                        strength=gr.Slider(0,1,value=1,step=.05,label='RefMod strength')
+                        retention=gr.Slider(0,1,value=1,step=.05,label='Reference retention')
+                    with gr.Row():
+                        first=gr.Image(type='filepath',label='Optional first frame',height=160,elem_id='first-frame')
+                        last=gr.Image(type='filepath',label='Optional last frame',height=160,elem_id='last-frame')
+                    upscale=gr.Checkbox(False,label='Upscale and refine video',elem_classes='ggf-toggle')
+                    with gr.Row(visible=False) as upscale_options:
+                        upmp=gr.Slider(.2,4,value=1.2,step=.1,label='Upscaled megapixels')
+                        refinesteps=gr.Slider(1,8,value=2,step=1,label='Refinement steps')
+                    gr.Markdown('Duration snaps upward to the H3 17k+5 frame grid at 24 fps. Long clips and large canvases use more memory. Upscale uses a learned latent upscaler and preserves the generated audio.')
+                with gr.Accordion('Import existing RefMods',open=False):
+                    imports=gr.File(file_count='multiple',file_types=['.safetensors'],label='RefMod files',elem_id='ref-import')
+                    import_view=gr.Textbox(label='Selected RefMods',interactive=False,visible=False)
+                    import_button=gr.Button('Add to library');import_status=gr.Markdown()
+            with gr.Tab('Settings',id='settings'):
+                with gr.Group(visible=not remote):
+                    gr.Markdown('### Output gallery')
+                    recycle=gr.Checkbox(value=settings['recycle_videos'],label='Send deleted videos to the Windows Recycle Bin',
+                                        info='Applies only to clips deleted in Refmod. Uncheck to use the app’s Deleted videos folder.',elem_classes='ggf-toggle')
+                with gr.Group(visible=not remote):
+                    active_model=gr.Textbox(value=video_profile.active_label(),label='Video generation model',interactive=False)
+                    gr.Markdown('### GrizzlyMax INT4')
+                    grizzly_path=gr.Textbox(label='GrizzlyMax folder or checkpoint',info='Browse below, or paste a path here and press Enter.')
+                    link_grizzly=gr.Button('Link and Use GrizzlyMax Models')
+                    gr.Markdown('### Standard MiniMax models')
+                    folder=gr.Textbox(label='MiniMax folder or checkpoint',
+                        value=settings.get('existing_model_location','') if not remote else '',
+                        info='Choose a models folder to search its subfolders, or paste a .safetensors path and press Enter.')
+                    browse_standard=gr.Button('Browse and Use MiniMax Models',variant='primary')
+                    link_status=gr.Textbox(label='Model linking status',interactive=False)
+                    link_job=gr.State('')
+                gr.Markdown('### Models\nDownload the creator models first, or install the complete video set. Existing model folders can be linked after SHA-256 verification; no copying is required.')
+                models=gr.HTML(model_table())
+                model_refresh=gr.Button('Refresh model status')
+                with gr.Group(visible=not remote):
+                    profile=gr.Radio(['RefMod creator — 5.8 GB','Creator + video + upscale — 47.6 GB',cfg.FAST_DOWNLOAD],value='RefMod creator — 5.8 GB',label='Models to manage')
+                    with gr.Row():
+                        download=gr.Button('Download missing models',variant='primary')
+                        reconnect_btn=gr.Button('Reconnect and resume',interactive=False)
+                        verify=gr.Button('Verify model hashes')
+                        stop_models=gr.Button('Stop model operation')
+                    transfer_info=gr.HTML(elem_id='model-download-progress')
+                maintenance_status=gr.Markdown()
+                with gr.Accordion('Phone access',open=False):
+                    gr.Markdown('Use your phone on the same network. The PC runs generation and must remain on. The local PC interface remains login-free. A blank password disables phone login. Changes apply after restart.')
+                    network=gr.Checkbox(value=settings['phone_enabled'],label='Enable phone access',interactive=not remote,elem_classes='ggf-toggle')
+                    username=gr.Textbox(value=settings['username'] if not remote else '',label='Phone username',interactive=not remote)
+                    password=gr.Textbox(value=settings['password'] if not remote else '',type='password',label='Phone password',interactive=not remote)
+                    save_net=gr.Button('Save phone settings',visible=not remote);network_status=gr.Markdown()
+                with gr.Accordion('App controls and build information',open=False):
+                    gr.Markdown(f'Version {cfg.VERSION}. Inference uses the bundled Comfy core without a ComfyUI server.')
+                    free=gr.Button('Release models / free GPU memory');free_status=gr.Markdown()
+                    confirm=gr.Checkbox(False,label='Stopping the server closes local and phone access; restarting requires RUN.bat on this PC.')
+                    end=gr.Button('Stop server');end_status=gr.Markdown()
+        downloads=gr.File(file_count='multiple',label='Saved outputs',interactive=False)
+        details=gr.Textbox(label='Result details',lines=5,interactive=False)
+        log=gr.File(label='Job log',interactive=False)
+        gr.HTML('<footer class="ggf-footer">Powered by MiniMax H3 · RefMod by Luisacaotica · Comfy inference core</footer>')
+        media.change(lambda items:previews.render(items,media_view),media,media_view,trigger_mode='always_last',show_progress='minimal')
+        preset.change(lambda name:gr.update(visible=name=='custom'),preset,steps,queue=False,show_progress='hidden')
+        upscale.change(lambda enabled:gr.update(visible=enabled),upscale,upscale_options,queue=False,show_progress='hidden')
+        mode.change(lambda choice:[gr.update(visible=choice=='Compressed Reference') for _ in range(2)],mode,[pool,refinement],queue=False,show_progress='hidden')
+        audio.change(lambda item:previews.render([item] if item else [],audio_view,True),audio,audio_view,trigger_mode='always_last',show_progress='minimal')
+        imports.change(describe_imports,imports,import_view,queue=False)
+        make.click(create,[token,media,audio,name,mode,concept,description,resolution,pool,latent_frames,refinement,max_tokens,max_frames,audio_seconds,audio_concept,layout],[activity,downloads,details],queue=False)
+        lora_browse.click(lambda:browse_models(remote,'lora'),None,lora_path)
+        lora_link.click(lambda loc,a,b:link_lora(loc,a,b,remote),[lora_path,*slots[::2]],[*slots[::2],lora_message],concurrency_id='lora-links')
+        lora_refresh.click(lora_menus,slots[::2],slots[::2],queue=False)
+        generation_fields=[prompt,selected,strength,retention,aspect,mp,duration,seed,preset,steps,upscale,upmp,refinesteps,first,last,batch,*slots,run_model]
+        go.click(generate,[token,*generation_fields],[activity,downloads,details],queue=False)
+        queue_panel.click(remove_from_queue,token,[queue_panel,queue_marker],queue=False,show_progress='hidden')
+        inspect.click(inspect_project,[token,pinned_key],[project_panel,facts,inspected_key],
+                      js="(t,k)=>[t,document.querySelector('#clip-player video')?.dataset.key||'']",queue=False,show_progress='hidden').success(
+                          None,None,None,js="()=>requestAnimationFrame(()=>document.querySelector('#project-details')?.scrollIntoView({block:'nearest'}))",queue=False)
+        dismiss.click(lambda:(gr.update(visible=False),'',''),None,[project_panel,facts,inspected_key],queue=False)
+        reuse.click(reuse_project,[token,inspected_key],generation_fields,queue=False)
+        for stop in (stop1,stop2,stop_models):stop.click(guarded(runtime.stop),token,activity,queue=False)
+        refresh.click(refresh_library,selected,selected,queue=False)
+        gr.on([selected.change,strength.change],reference_labels,[selected,strength],[labels,shortcuts],queue=False,trigger_mode='always_last')
+        import_button.click(import_mod,imports,import_status,queue=False)
+        model_refresh.click(model_table,None,models,queue=False)
+        if not remote:
+            ui.load(lambda:cfg.read_settings().get('existing_model_location',''),None,folder,queue=False)
+            for button,field,family in ((link_grizzly,grizzly_path,'grizzly'),(browse_standard,folder,'standard')):
+                button.click(lambda t,p,f=family:start_model_link(t,p,f,remote,True),[token,field],[field,link_status,link_job],concurrency_id='model-picker')
+                field.submit(lambda t,p,f=family:start_model_link(t,p,f,remote,False),[token,field],[field,link_status,link_job],queue=False)
+        ui.load(video_profile.active_label,None,active_model,queue=False)
+        ui.load(model_table,None,models,queue=False)
+        reconnect_btn.click(lambda t:resume_connection(t,remote),token,None,queue=False)
+        for button,action in ((download,'download'),(verify,'verify')):
+            button.click(lambda t,p,a=action:maintenance(t,a,p,remote),[token,profile],maintenance_status,queue=False)
+        save_net.click(save_network,[network,username,password],network_status,queue=False)
+        if not remote:
+            ui.load(lambda:cfg.read_settings()['recycle_videos'],None,recycle,queue=False)
+            recycle.input(lambda enabled:cfg.update_settings(recycle_videos=enabled),recycle,None,queue=False)
+        free.click(guarded(runtime.release),None,free_status,queue=False)
+        end.click(stop_server,confirm,end_status,queue=False)
+        ui.load(restore,browser_token,[token,prompt,selected,aspect,mp,duration,seed,preset,upscale,media,audio,name,mode,concept,description,first,last,*slots,steps,run_model,strength,retention,upmp,refinesteps,batch],js=RESTORE_JS,queue=False)
+        timer=gr.Timer(1)
+        if not remote:
+            timer.tick(link_progress,[token,link_job],[link_status,link_job,active_model,models],queue=False,show_progress='hidden')
+        timer.tick(poll,[token,last_seen],[activity,make,go,downloads,details,log,last_seen,models,transfer_info,reconnect_btn],queue=False)
+        gallery.click(delete_gallery_clip,token,[gallery,gallery_keys],queue=False,show_progress='hidden')
+        gif_button.click(convert_to_gif,[token,pinned_key,gif_loop],gif_result,js="(t,k,loop)=>[t,document.querySelector('#clip-player video')?.dataset.key||'',loop]",concurrency_limit=1,show_progress='full')
+        timer.tick(clip_gallery,[token,gallery_keys,pinned_key],[gallery,gallery_keys],js="(t,k,p)=>[t,k,sessionStorage.getItem('minimax-refmod-gallery:'+localStorage.getItem('minimax-refmod-workspace'))||'']",queue=False,show_progress='hidden')
+        timer.tick(queue_view,[token,queue_marker],[queue_panel,queue_marker],queue=False)
+    return ui
+
+def launch(open_browser=True):
+    settings=cfg.read_settings()
+    runtime.restore_queue()
+    for remote in ([False,True] if settings['phone_enabled'] else [False]):
+        host='0.0.0.0' if remote else '127.0.0.1'
+        start=7910 if remote else 7900
+        for port in range(start,start+10):
+            sock=socket.socket()
+            try:sock.bind((host,port));sock.close();break
+            except OSError:sock.close()
+        else:raise RuntimeError(f'No free port in {start}–{start+9}.')
+        ui=build_ui(remote)
+        auth=(settings['username'],settings['password']) if remote and settings['password'] else None
+        ui.launch(server_name=host,server_port=port,inbrowser=open_browser and not remote,prevent_thread_lock=True,share=False,auth=auth,
+            css=CSS,theme=theme(),allowed_paths=[str(cfg.JOBS.resolve()),str(cfg.OUTPUTS.resolve()),str(cfg.LIBRARY.resolve())],show_error=True)
+        SERVERS.append(ui)
+        if not remote:(cfg.APP/'runtime/server-address.json').write_text(json.dumps({'port':port}))
+        if remote:print(f'Phone access: http://{socket.gethostbyname(socket.gethostname())}:{port}',flush=True)
+    try:
+        while True:time.sleep(1)
+    except KeyboardInterrupt:
+        runtime.shutdown_workers()
+        for ui in SERVERS:ui.close()
