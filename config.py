@@ -9,7 +9,7 @@ OUTPUTS = APP / 'outputs'
 LIBRARY = MODELS / 'refmods'
 MANIFEST = json.loads((APP / 'models.lock.json').read_text())
 FILES = {x['key']: x for x in MANIFEST}
-VERSION = '0.9.6'
+VERSION = '0.9.7'
 
 # (UI label, managed adapter, fixed steps, first-pass sampler, video shift)
 PRESETS = {

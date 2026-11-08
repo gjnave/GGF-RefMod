@@ -13,11 +13,11 @@ Use Windows x64 with an NVIDIA GPU and a driver compatible with CUDA 13.0. Insta
 1. Clone this release from GitHub and enter its folder.
 
    ```bat
-   git clone --branch v0.9.6 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
+   git clone --branch v0.9.7 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
    cd Minimax-Refmod
    ```
 
-   The same release is on [Codeberg](https://codeberg.org/Cognibuild/GGF-RefMod). To use that mirror, substitute `https://codeberg.org/Cognibuild/GGF-RefMod.git` in the clone command.
+   The same release is on [Codeberg](https://codeberg.org/Cognibuild/MiniMax-RefMod-GGF). To use that mirror, substitute `https://codeberg.org/Cognibuild/MiniMax-RefMod-GGF.git` in the clone command.
 
 2. Create the private Python environment and install the CUDA build of PyTorch and the app requirements.
 
