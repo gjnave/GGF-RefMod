@@ -9,6 +9,7 @@
 !/sources.lock.json
 !/models.lock.json
 !/app.py
+!/app_updates.py
 !/config.py
 !/core_worker.py
 !/download_models.py
@@ -16,6 +17,7 @@
 !/media_previews.py
 !/model_transfer.py
 !/project_history.py
+!/generation_eta.py
 !/recycle_video.py
 !/runtime.py
 !/ui.py

@@ -13,7 +13,7 @@ Use Windows x64 with an NVIDIA GPU and a driver compatible with CUDA 13.0. Insta
 1. Clone this release from GitHub and enter its folder.
 
    ```bat
-   git clone --branch v0.9.9 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
+   git clone --branch v0.10.0 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
    cd Minimax-Refmod
    ```
 
@@ -36,6 +36,18 @@ Use Windows x64 with an NVIDIA GPU and a driver compatible with CUDA 13.0. Insta
    ```
 
 4. Open **Settings** to download or link models. Model files are separate from the code. The default local address is `http://127.0.0.1:7900`. The application can choose another port if it is occupied. An optional [aria2c Windows x64 release](https://github.com/aria2/aria2/releases/tag/release-1.37.0) enables parallel downloads. Extract its folder inside `runtime/tools/` so the executable is at `runtime/tools/aria2-1.37.0-win-64bit-build1/aria2c.exe`. A manual install without aria2c uses Windows curl.
+
+## Updating
+
+Use **Settings → Check for updates → Update app**, or close RefMod and run **UPDATE.bat** from the member package. The app checks the published release, verifies the source archive, validates the updated code and saves replaced files under `runtime/update-backups/`. Models, references, outputs, queue history and settings stay in place. The Settings action restarts the app after installation. An interrupted generation can restart on the next launch.
+
+For a manual source installation, close the app and run:
+
+```bat
+.venv\Scripts\python.exe app_updates.py --update
+```
+
+If an update changes Python dependencies, the updater builds a separate environment under `runtime/environments/`. The launcher selects it automatically. Update diagnostics are in `runtime/updates/` and Settings displays the last result.
 
 ## Models
 
@@ -74,15 +86,25 @@ Choose up to eight RefMods. Beside **Scene and sound**, click a numbered referen
 
 Click **Generate Video** for the first submission. While it runs, change the prompt or settings and click **Add to queue**. Each submission saves its inputs and seed, and the app runs them in order on one GPU. Every finished clip appears in the thumbnail strip, newest first, including the clip in the main player. Click a thumbnail to select it. Each newly finished clip becomes the active video in the main player. All thumbnails stay in the strip, and you can click any one to view it.
 
-The **Generation queue** box beneath the clip thumbnails shows the running submission and waiting positions. Use **Remove** on a waiting row or **Stop current job** to stop the active worker. Open **Recent submissions** for the last 20. Closing the browser leaves the queue running. After an app restart, waiting submissions resume and an interrupted generation is marked stopped.
+The **Generation queue** box beneath the clip thumbnails shows the running submission and waiting positions. Use **Remove** on a waiting row or **Stop current job** to stop the active worker. Open **Recent submissions** for the last 20. Closing the browser leaves the queue running. After an app restart, waiting submissions resume and an interrupted generation restarts automatically with its saved prompt, seed and inputs. Completed batch clips are kept, and the unfinished clip restarts from the beginning. Jobs explicitly stopped or cancelled stay stopped.
+
+Choose **Run again** on a recent submission to queue a fresh generation with its saved prompt, seed, models, references and settings. Saved outputs from the earlier submission stay in the gallery.
+
+Double-click a selected label, or focus it and press **Enter**, to choose one replacement. Choosing a RefMod that is already selected swaps their positions. **Alt + Arrow keys** also reorder focused labels. Prompt labels and reference shortcuts follow that order. The order is saved for the workspace and applies to future submissions.
+
+The progress bar estimates completion of the whole submission, including every video in a batch. It shows elapsed time and estimated time remaining. Estimates use saved timings from matching render settings and update with live sampling speed. The first run shows **Estimating time left** until timing data is available. Loading, refinement, decoding and saving count toward the bar. Estimates can change as the PC's speed changes.
 
 Double-click a finished thumbnail or the main video, or select **View project details**. This shows the prompt, model, seed, output length, dimensions, and timing. New clips record individual render times; job time excludes time spent waiting in the queue. Older clips show the information that is available. **Reuse these settings** fills in the form for one clip using its actual seed. Review or edit the form, then click **Generate Video** yourself. **Close details** leaves the form alone.
+
+Click **Reuse prompt & settings** beneath the active player to restore its prompt, ordered RefMods, LoRAs, seed mode, model, dimensions, duration, sampling and upscale settings, frame inputs and batch count. Random stays random. An explicitly numbered seed restores the active clip's seed. The actual generated seed is always available in project details. Review the restored form before submitting.
 
 **Thumbnails shown** sets the strip size from 1 to 20. The browser remembers your choice. The newest clips fill the available places automatically. Click **×** on a thumbnail or **× Delete current video** under the player and confirm to send that MP4 directly to the Windows Recycle Bin. Use **Restore** in the Recycle Bin to return it to the gallery. The **Settings → Output gallery → Send deleted videos to the Windows Recycle Bin** checkbox applies only to Refmod. Uncheck it if you prefer to move clips to `outputs/Deleted videos/`.
 
 Turn on **Loop playback** to repeat the selected video in the main player. The player remembers this setting when you switch clips or refresh.
 
-To export the selected video, leave **Loop GIF continuously** checked for an endlessly repeating GIF, or uncheck it for a GIF that plays once. Click **Convert to GIF**, then **Preview GIF** or **Download GIF**. GIFs contain the full clip without audio and are saved in `outputs/GIFs/` at up to 12 frames per second and 640 pixels on the longest side. The original video stays in the gallery.
+Turn on **Continuous play** to advance through saved videos in gallery order, wrapping to the first after the last. It includes videos beyond the visible thumbnail limit. Selecting Continuous play switches off Loop playback, and selecting Loop playback switches off Continuous play.
+
+To export the selected video as a looping GIF, click **Convert to GIF**, then **Preview GIF** or **Download GIF**. GIFs contain the full clip without audio and are saved in `outputs/GIFs/` at up to 12 frames per second and 640 pixels on the longest side. The original video stays in the gallery.
 
 Turbo uses the supplied workflow's FL2V eight-step adapter, `res_multistep` sampler, simple schedule, and 12/3 video/audio sigma shifts. The seed defaults to **Random**. Leave it blank for a fresh seed on every Generate, or enter a number to reuse it across runs and reloads. The generated seed appears in the result details. Sequential videos increment the starting seed within a batch.
 

@@ -9,7 +9,7 @@ OUTPUTS = APP / 'outputs'
 LIBRARY = MODELS / 'refmods'
 MANIFEST = json.loads((APP / 'models.lock.json').read_text())
 FILES = {x['key']: x for x in MANIFEST}
-VERSION = '0.9.9'
+VERSION = '0.10.0'
 
 # (UI label, managed adapter, fixed steps, first-pass sampler, video shift)
 PRESETS = {
@@ -78,7 +78,7 @@ def numeric(value, low, high, label, integer=False):
 
 def seed_input(value):
     text='' if value is None else str(value).strip()
-    if not text: return ''
+    if not text or text.lower()=='random': return ''
     try: seed=int(text)
     except ValueError: raise ValueError('Enter a whole number or leave the seed blank for Random.')
     if seed == -1: return ''

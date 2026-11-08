@@ -1,5 +1,6 @@
 from __future__ import annotations
 import argparse, json, os, subprocess, sys
+from pathlib import Path
 from config import APP,initialize
 
 def self_check():
@@ -32,6 +33,10 @@ def single_instance():
     return handle
 
 if __name__=='__main__':
+    from app_updates import active_python
+    target=active_python()
+    if (APP/'runtime/active-python.txt').is_file() and os.path.normcase(str(target.resolve()))!=os.path.normcase(str(Path(sys.executable).resolve())):
+        os.execv(str(target),[str(target),str(APP/'app.py'),*sys.argv[1:]])
     p=argparse.ArgumentParser();p.add_argument('--self-check',action='store_true');p.add_argument('--no-browser',action='store_true')
     a=p.parse_args()
     if a.self_check:self_check()

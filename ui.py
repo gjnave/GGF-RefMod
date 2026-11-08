@@ -7,6 +7,8 @@ import runtime
 import video_profile
 import video_loras
 import project_history
+import generation_eta
+import app_updates
 import media_previews as previews
 from urllib.parse import quote
 from functools import lru_cache
@@ -95,11 +97,67 @@ def reference_labels(names,strength=1):
     shortcuts='<span>Insert reference</span> '+ ' '.join(buttons) if buttons else ''
     return '\n'.join(rows) or 'Select RefMods to see their prompt labels.',gr.update(value=shortcuts,visible=bool(buttons))
 
+def reference_selection(names):
+    available=library()
+    selected=[name for name in names or [] if name in available]
+    choices=selected+[name for name in available if name not in selected]
+    return gr.update(choices=choices,value=selected,interactive=True)
+
+
 def guarded(fn):
     def run(*args,**kw):
         try:return fn(*args,**kw)
         except Exception as e:raise gr.Error(str(e)) from e
     return run
+
+def reorder_refmods(token,names,event:gr.EventData):
+    names=list(names or [])
+    name=getattr(event,'name',None)
+    direction=getattr(event,'direction',None)
+    target_name=getattr(event,'target_name',None)
+    if name not in names:
+        raise gr.Error('Select a RefMod before reordering it.')
+    if target_name in names and target_name!=name:
+        names.remove(name)
+        target=names.index(target_name)+(1 if getattr(event,'after',False) else 0)
+        names.insert(target,name)
+    elif direction in (-1,1):
+        index=names.index(name)
+        target=index+direction
+        if 0<=target<len(names):
+            names[index],names[target]=names[target],names[index]
+    else:
+        return gr.skip()
+    with runtime.LOCK:
+        saved=runtime.load_workspace(token)
+        saved.setdefault('controls',{})['selected']=names
+        runtime.save_workspace(token,saved)
+    return reference_selection(names)
+
+def reference_action(token,names,event:gr.EventData):
+    if getattr(event,'action',None)=='replace':
+        name=getattr(event,'name',None)
+        if name not in (names or []):
+            raise gr.Error('Select a RefMod first.')
+        return gr.update(interactive=False),gr.update(visible=True),name,gr.update(choices=library(),value=name)
+    return reorder_refmods(token,names,event),gr.skip(),gr.skip(),gr.skip()
+
+@guarded
+def replace_refmod(token,names,target,replacement):
+    names=list(names or [])
+    if target not in names or replacement not in library():
+        raise ValueError('Select an available RefMod to replace this reference.')
+    index=names.index(target)
+    if replacement in names:
+        other=names.index(replacement)
+        names[index],names[other]=names[other],names[index]
+    else:
+        names[index]=replacement
+    with runtime.LOCK:
+        saved=runtime.load_workspace(token)
+        saved.setdefault('controls',{})['selected']=names
+        runtime.save_workspace(token,saved)
+    return reference_selection(names),gr.update(visible=False),''
 
 @guarded
 def create(token,media,audio,name,mode,concept,description,resolution,pool,latent_frames,refinement,max_tokens,max_frames,audio_seconds,audio_concept,layout):
@@ -145,8 +203,8 @@ def generate(token,prompt,selected,strength,retention,aspect,mp,duration,seed,pr
     return 'Video submitted. See Generation queue.',gr.skip(),gr.skip()
 
 def refresh_library(selected):
-    choices=library()
-    return gr.update(choices=choices,value=[x for x in selected or [] if x in choices])
+    return reference_selection(selected)
+
 
 def lora_menus(first,second):
     choices=video_loras.choices()
@@ -283,14 +341,23 @@ def queue_view(token,previous):
         info=html.escape(row['stage']) if row['status']=='error' else ''
         button=(f'<button type="button" data-remove="{row["id"]}" aria-label="Remove {title} from queue">Remove</button>' if row['position'] else '')
         section=live if row['status'] in ('queued','running') else recent
+        if section is recent:
+            button=f'<button type="button" class="queue-rerun" data-rerun="{row["id"]}" aria-label="Run again: {title}">Run again</button>'
         section.append(f'<li><strong>{label}</strong><span>{title}</span>{button} {" ".join(links)} {info}</li>')
     panel=('<ul>'+''.join(live)+'</ul>' if live else '<p>Queue is empty.</p>')
     if recent:panel+='<details><summary>Recent submissions</summary><ul>'+''.join(recent)+'</ul></details>'
     return (panel,panel) if panel!=previous else (gr.skip(),gr.skip())
 
-def remove_from_queue(token,event:gr.EventData):
-    try:gr.Info(runtime.cancel_waiting(token,event.job))
-    except ValueError as e:gr.Warning(str(e))
+def queue_action(token,event:gr.EventData):
+    try:
+        if event.action=='rerun':
+            _,created=runtime.run_again(token,event.job)
+            gr.Info('Submitted again with the saved prompt, seed and settings.' if created else 'This retry is already running or waiting.')
+        elif event.action=='remove':
+            gr.Info(runtime.cancel_waiting(token,event.job))
+        else:
+            raise ValueError('Choose Run again or Remove.')
+    except (OSError,ValueError) as e:gr.Warning(str(e))
     return queue_view(token,None)
 
 @guarded
@@ -303,10 +370,18 @@ def reuse_project(token,key):
     choices=library(); adapters=video_loras.choices()
     v=project_history.reuse_values(p,choices,{path for _,path in adapters})
     slots=[value for path,weight in v['slots'] for value in (gr.update(choices=adapters,value=path),weight)]
-    gr.Info('Settings loaded for one clip. Review them, then click Generate Video when ready.')
-    return (v['prompt'],gr.update(choices=choices,value=v['selected']),v['strength'],v['retention'],v['aspect'],v['mp'],v['duration'],
+    with runtime.LOCK:
+        saved=runtime.load_workspace(token)
+        saved['controls']=dict(prompt=v['prompt'],selected=v['selected'],strength=v['strength'],retention=v['retention'],
+                               aspect=v['aspect'],mp=v['mp'],duration=v['duration'],seed_input=v['seed'],preset=v['preset'],
+                               custom_steps=v['steps'],upscale=v['upscale'],upmp=v['upmp'],model=v['model'],loras=v['slots'])
+        saved['reused_generation']=dict(first_frame=v['frames'][0],last_frame=v['frames'][1],retention=v['retention'],
+                                       refine_steps=v['refinesteps'],batch=v['batch'])
+        runtime.save_workspace(token,saved)
+    gr.Info('Prompt, references and generation settings restored. Review them, then click Generate Video.')
+    return (v['prompt'],reference_selection(v['selected']),v['strength'],v['retention'],v['aspect'],v['mp'],v['duration'],
             v['seed'],v['preset'],gr.update(value=v['steps'],visible=v['preset']=='custom'),v['upscale'],v['upmp'],v['refinesteps'],
-            *v['frames'],1,*slots,v['model'])
+            *v['frames'],v['batch'],*slots,v['model'])
 
 def media_url(path):
     return './gradio_api/file='+quote(Path(path).as_posix(),safe='/:')
@@ -331,18 +406,17 @@ def clip_gallery(token,previous,pinned=''):
     clips=[]
     for clip in runtime.workspace_clips(token):
         job,index,_,file=clip
-        if len(clips)>=20 and pinned!=f'{job}-{index}':continue
         if Path(file).is_file():clips.append(clip)
     destination='bin' if cfg.read_settings()['recycle_videos'] is True else 'folder'
     keys=[destination,[(job,index) for job,index,_,_ in clips]]
     if keys==previous:return gr.skip(),gr.skip()
     buttons=[]
-    for job,index,label,file in clips:
+    for position,(job,index,label,file) in enumerate(clips):
         title=html.escape(f'{label} · Clip {index}',quote=True)
         src=html.escape(media_url(file),quote=True)
-        poster=html.escape(clip_poster(file,cfg.JOBS/job,index),quote=True)
+        poster=html.escape(clip_poster(file,cfg.JOBS/job,index),quote=True) if position<20 else ''
         picture=f'<img loading="lazy" src="{poster}" alt="">' if poster else '▶'
-        buttons.append(f'<span class="clip-item"><button type="button" class="clip-tile" data-destination="{destination}" data-key="{job}-{index}" data-src="{src}" title="{title}" aria-label="Play {title}">{picture}</button><button type="button" class="clip-remove" aria-label="Delete {title}" title="Delete video">×</button></span>')
+        buttons.append(f'<span class="clip-item" hidden><button type="button" class="clip-tile" data-destination="{destination}" data-key="{job}-{index}" data-src="{src}" title="{title}" aria-label="Play {title}">{picture}</button><button type="button" class="clip-remove" aria-label="Delete {title}" title="Delete video">×</button></span>')
     return ''.join(buttons),keys
 
 def delete_gallery_clip(token,event:gr.EventData):
@@ -352,10 +426,10 @@ def delete_gallery_clip(token,event:gr.EventData):
         gr.Warning(f'Could not delete the clip: {exc}')
     return clip_gallery(token,None,getattr(event,'pinned',''))
 
-def convert_to_gif(token,key,loop):
+def convert_to_gif(token,key):
     import gif_export
     try:
-        path=gif_export.export(runtime.workspace_clip_path(token,key),loop=loop)
+        path=gif_export.export(runtime.workspace_clip_path(token,key),loop=True)
     except (OSError,ValueError,IndexError) as exc:
         raise gr.Error(f'GIF export failed: {exc}') from exc
     url=html.escape(media_url(path),quote=True)
@@ -363,7 +437,7 @@ def convert_to_gif(token,key,loop):
     return f'<a href="{url}" download="{name}">Download GIF</a> · {name}<details><summary>Preview GIF</summary><img src="{url}" alt="Exported animated GIF" style="max-width:100%"></details>'
 
 def generation_progress(token,previous):
-    state=runtime.current(token) if token else None
+    state,estimate=runtime.generation_estimate(token)
     content=''
     if state and state['kind']=='generate':
         status=state['status']
@@ -376,12 +450,18 @@ def generation_progress(token,previous):
         progress=state.get('progress')
         if status=='complete':
             value=' value="100"'
-            detail='100%'
-        elif status=='running' and progress and progress[1]>0:
-            step,total=progress
-            percent=max(0,min(100,100*step/total))
+            detail='100% complete'
+        elif status=='running':
+            percent=estimate['percent'] if estimate else 0
             value=f' value="{percent:g}"'
-            detail=f'{step:g} / {total:g} · {percent:.0f}% of this stage'
+            remaining=estimate['remaining'] if estimate else None
+            left='Estimating time left…' if remaining is None else f'About {generation_eta.duration(remaining)} left'
+            detail=f'{percent:.0f}% overall · {left}'
+        if status in ('running','complete'):
+            elapsed=estimate['elapsed'] if estimate else (state.get('finished') or time.time())-state['started']
+            detail+=f' · Elapsed {project_history.clock(elapsed)}'
+        if status=='running' and progress and progress[1]>0:
+            detail+=f' · Stage {progress[0]:g} / {progress[1]:g}'
         if status in ('running','complete'):
             bar=f'<progress max="100"{value} aria-label="Video generation progress"></progress>'
         else:
@@ -416,13 +496,13 @@ def restore(token):
         request_path=cfg.JOBS/job/'request.json'
         if request_path.is_file():request=json.loads(request_path.read_text(encoding='utf-8'))
     creator=request if request.get('kind')=='create' else {}
-    frames=request if request.get('kind')=='generate' else {}
+    frames=saved.get('reused_generation') or (request if request.get('kind')=='generate' else {})
     media=[p for p in creator.get('media',[]) if Path(p).is_file()]
     slots=c.get('loras',[('',1),('',1)])
     menus=lora_menus(slots[0][0],slots[1][0])
     preset=cfg.saved_preset(c)
     # Older workspaces stored the generated number, so only restore an explicit input.
-    return (token,c.get('prompt',''),gr.update(choices=library(),value=[x for x in c.get('selected',[]) if x in library()]),c.get('aspect','Portrait 9:16'),
+    return (token,c.get('prompt',''),reference_selection(c.get('selected',[])),c.get('aspect','Portrait 9:16'),
             c.get('mp',.5),c.get('duration',3),c.get('seed_input',''),preset,c.get('upscale',False),media or None,creator.get('audio'),creator.get('name',''),
             creator.get('mode','Full Reference'),creator.get('concept','identity'),creator.get('description',''),frames.get('first_frame'),frames.get('last_frame'),
             menus[0],slots[0][1],menus[1],slots[1][1],gr.update(value=c.get('custom_steps',20),visible=preset=='custom'),
@@ -433,6 +513,41 @@ def save_network(enabled,username,password):
     if password and not username.strip():raise gr.Error('Enter a username when using a password.')
     cfg.update_settings(phone_enabled=enabled,username=username.strip(),password=password)
     return 'Saved. Restart with RUN.bat to apply phone access settings.'
+
+def check_app_update(remote=False):
+    if remote:raise gr.Error('Update the app from this PC.')
+    try:
+        manifest,available=app_updates.check()
+        return f"Installed {cfg.VERSION}. Latest release {manifest['version']}." + (' Click Update app to install it.' if available else ' You are up to date.')
+    except Exception as error:
+        raise gr.Error(str(error)) from error
+
+def update_app(remote=False,progress=gr.Progress()):
+    if remote:raise gr.Error('Update the app from this PC.')
+    try:
+        with runtime.LOCK:
+            if runtime.is_busy() or runtime.PENDING:
+                raise ValueError('Finish or stop the active job and clear the waiting queue before updating.')
+        progress(0,desc='Downloading and verifying the update')
+        folder=app_updates.prepare()
+        if folder is None:return 'You are up to date.'
+        with runtime.LOCK:
+            if runtime.is_busy() or runtime.PENDING:
+                raise ValueError('A job started while the update downloaded. Finish it, then click Update app again.')
+            runtime.SHUTTING_DOWN=True
+            try:
+                app_updates.launch_prepared(folder,wait_pid=os.getpid(),relaunch=True)
+            except Exception:
+                runtime.SHUTTING_DOWN=False
+                raise
+        def close_for_update():
+            time.sleep(2)
+            for server in SERVERS:server.close()
+            os._exit(0)
+        threading.Thread(target=close_for_update,daemon=True).start()
+        return 'The verified update is ready. RefMod will close, install it and restart. Refresh this page when it returns.'
+    except Exception as error:
+        raise gr.Error(str(error)) from error
 
 def stop_server(confirmed):
     if not confirmed:raise gr.Error('Confirm that restarting requires RUN.bat on the PC.')
@@ -485,7 +600,13 @@ def build_ui(remote=False):
                 gr.Markdown('**Select saved RefMods and describe the scene, movement, dialogue, and sound.** Use the reference labels below in your prompt. Ctrl+Enter starts the visible Create or Generate action.')
                 with gr.Row():
                     with gr.Column():
-                        selected=gr.Dropdown(library(),multiselect=True,max_choices=8,label='RefMod library (choose up to 8)',info='Open the list or type to find a saved RefMod.',elem_id='refmod-library',value=[])
+                        selected=gr.Dropdown(library(),multiselect=True,max_choices=8,label='RefMod library (choose up to 8)',info='Double-click a selected label to replace it. Choosing another selected RefMod swaps their positions.',elem_id='refmod-library',value=[])
+                        refmod_sort=gr.HTML('',elem_id='refmod-order',
+                            js_on_load=(cfg.APP/'assets/refmod-order.js').read_text(encoding='utf-8'))
+                        replace_target=gr.State('')
+                        with gr.Group(visible=False,elem_id='refmod-replace') as replace_panel:
+                            replacement=gr.Dropdown(library(),label='Choose one replacement',value=None,filterable=True)
+                            cancel_replace=gr.Button('Cancel replacement',size='sm')
                         refresh=gr.Button('Refresh library',size='sm')
                         labels=gr.Textbox(label='Reference labels for your prompt',interactive=False,lines=3)
                         shortcuts=gr.HTML('',visible=False,elem_id='prompt-shortcuts',js_on_load=(cfg.APP/'assets/prompt-shortcuts.js').read_text(encoding='utf-8'))
@@ -515,10 +636,10 @@ def build_ui(remote=False):
                         generation_bar=gr.HTML('',visible=False,elem_id='generation-progress')
                         progress_marker=gr.State('')
                         gr.HTML('<video controls playsinline preload="metadata" aria-label="Generated video"></video><div class="clip-caption" aria-live="polite">Completed videos appear here.</div>'
-                                f'<div class="clip-tools"><label><input type="checkbox" class="loop-playback"> Loop playback</label><label>Thumbnails shown <select aria-label="Thumbnails shown">{count_options}</select></label><button type="button" class="delete-current" hidden>× Delete current video</button></div>',elem_id='clip-player')
+                                f'<div class="clip-tools"><label><input type="checkbox" class="loop-playback"> Loop playback</label><label><input type="checkbox" class="continuous-playback"> Continuous play</label><label>Thumbnails shown <select aria-label="Thumbnails shown">{count_options}</select></label><button type="button" class="delete-current" hidden>× Delete current video</button></div>',elem_id='clip-player')
                         with gr.Row():
+                            reuse_prompt=gr.Button('Reuse prompt & settings',size='sm',elem_id='reuse-active-prompt')
                             gif_button=gr.Button('Convert to GIF',size='sm',elem_id='convert-to-gif')
-                            gif_loop=gr.Checkbox(value=True,label='Loop GIF continuously')
                         gif_result=gr.HTML('')
                         gallery=gr.HTML('',elem_id='clip-gallery',js_on_load=(cfg.APP/'assets/clip-gallery.js').read_text(encoding='utf-8'))
                         gallery_keys=gr.State(None)
@@ -526,7 +647,7 @@ def build_ui(remote=False):
                         with gr.Group(elem_id='queue-box'):
                             gr.Markdown('### Generation queue')
                             queue_panel=gr.HTML('<p>Queue is empty.</p>',elem_id='generation-queue',
-                                js_on_load="""element.addEventListener('click',event=>{const button=event.target.closest('button[data-remove]');if(button)trigger('click',{job:button.dataset.remove});});""")
+                                js_on_load="""element.addEventListener('click',event=>{const button=event.target.closest('button[data-remove],button[data-rerun]');if(button)trigger('click',{job:button.dataset.rerun||button.dataset.remove,action:button.dataset.rerun?'rerun':'remove'});});""")
                             queue_marker=gr.State(None)
                         inspect=gr.Button('View project details',elem_id='inspect-project',size='sm')
                         gr.Markdown('Double-click a video or thumbnail to see how it was made.')
@@ -588,6 +709,14 @@ def build_ui(remote=False):
                         stop_models=gr.Button('Stop model operation')
                     transfer_info=gr.HTML(elem_id='model-download-progress')
                 maintenance_status=gr.Markdown()
+                with gr.Group(visible=not remote):
+                    gr.Markdown('### App updates')
+                    with gr.Row():
+                        check_update=gr.Button('Check for updates')
+                        install_update=gr.Button('Update app')
+                    result_file=cfg.APP/'runtime/update-result.json'
+                    last_update=json.loads(result_file.read_text()).get('message','') if result_file.is_file() else ''
+                    update_status=gr.Markdown(last_update)
                 with gr.Accordion('Phone access',open=False):
                     gr.Markdown('Use your phone on the same network. The PC runs generation and must remain on. The local PC interface remains login-free. A blank password disables phone login. Changes apply after restart.')
                     network=gr.Checkbox(value=settings['phone_enabled'],label='Enable phone access',interactive=not remote,elem_classes='ggf-toggle')
@@ -615,14 +744,22 @@ def build_ui(remote=False):
         lora_refresh.click(lora_menus,slots[::2],slots[::2],queue=False)
         generation_fields=[prompt,selected,strength,retention,aspect,mp,duration,seed,preset,steps,upscale,upmp,refinesteps,first,last,batch,*slots,run_model]
         go.click(generate,[token,*generation_fields],[activity,downloads,details],queue=False)
-        queue_panel.click(remove_from_queue,token,[queue_panel,queue_marker],queue=False,show_progress='hidden')
+        queue_panel.click(queue_action,token,[queue_panel,queue_marker],queue=False,show_progress='hidden')
         inspect.click(inspect_project,[token,pinned_key],[project_panel,facts,inspected_key],
                       js="(t,k)=>[t,document.querySelector('#clip-player video')?.dataset.key||'']",queue=False,show_progress='hidden').success(
                           None,None,None,js="()=>requestAnimationFrame(()=>document.querySelector('#project-details')?.scrollIntoView({block:'nearest'}))",queue=False)
         dismiss.click(lambda:(gr.update(visible=False),'',''),None,[project_panel,facts,inspected_key],queue=False)
         reuse.click(reuse_project,[token,inspected_key],generation_fields,queue=False)
+        reuse_prompt.click(reuse_project,[token,pinned_key],generation_fields,
+                          js="(t,k)=>[t,document.querySelector('#clip-player video')?.dataset.key||'']",
+                          queue=False,show_progress='hidden').success(None,None,None,
+                              js="()=>{const p=document.querySelector('#scene-and-sound textarea');if(p){p.focus({preventScroll:true});p.setSelectionRange(p.value.length,p.value.length);p.scrollIntoView({block:'center',behavior:'smooth'});}}",
+                              queue=False)
         for stop in (stop1,stop2,stop_models):stop.click(guarded(runtime.stop),token,activity,queue=False)
         refresh.click(refresh_library,selected,selected,queue=False)
+        refmod_sort.click(reference_action,[token,selected],[selected,replace_panel,replace_target,replacement],queue=False,show_progress='hidden')
+        replacement.input(replace_refmod,[token,selected,replace_target,replacement],[selected,replace_panel,replace_target],queue=False,show_progress='hidden')
+        cancel_replace.click(lambda:(gr.update(interactive=True),gr.update(visible=False),''),None,[selected,replace_panel,replace_target],queue=False)
         gr.on([selected.change,strength.change],reference_labels,[selected,strength],[labels,shortcuts],queue=False,trigger_mode='always_last')
         import_button.click(import_mod,imports,import_status,queue=False)
         model_refresh.click(model_table,None,models,queue=False)
@@ -637,6 +774,8 @@ def build_ui(remote=False):
         for button,action in ((download,'download'),(verify,'verify')):
             button.click(lambda t,p,a=action:maintenance(t,a,p,remote),[token,profile],maintenance_status,queue=False)
         save_net.click(save_network,[network,username,password],network_status,queue=False)
+        check_update.click(lambda:check_app_update(remote),None,update_status,queue=False)
+        install_update.click(lambda progress=gr.Progress():update_app(remote,progress),None,update_status,concurrency_id='app-update',concurrency_limit=1)
         if not remote:
             ui.load(lambda:cfg.read_settings()['recycle_videos'],None,recycle,queue=False)
             recycle.input(lambda enabled:cfg.update_settings(recycle_videos=enabled),recycle,None,queue=False)
@@ -649,7 +788,7 @@ def build_ui(remote=False):
             timer.tick(link_progress,[token,link_job],[link_status,link_job,active_model,models],queue=False,show_progress='hidden')
         timer.tick(poll,[token,last_seen],[activity,make,go,downloads,details,log,last_seen,models,transfer_info,reconnect_btn],queue=False)
         gallery.click(delete_gallery_clip,token,[gallery,gallery_keys],queue=False,show_progress='hidden')
-        gif_button.click(convert_to_gif,[token,pinned_key,gif_loop],gif_result,js="(t,k,loop)=>[t,document.querySelector('#clip-player video')?.dataset.key||'',loop]",concurrency_limit=1,show_progress='full')
+        gif_button.click(convert_to_gif,[token,pinned_key],gif_result,js="(t,k)=>[t,document.querySelector('#clip-player video')?.dataset.key||'']",concurrency_limit=1,show_progress='full')
         timer.tick(clip_gallery,[token,gallery_keys,pinned_key],[gallery,gallery_keys],js="(t,k,p)=>[t,k,sessionStorage.getItem('minimax-refmod-gallery:'+localStorage.getItem('minimax-refmod-workspace'))||'']",queue=False,show_progress='hidden')
         timer.tick(queue_view,[token,queue_marker],[queue_panel,queue_marker],queue=False)
     return ui

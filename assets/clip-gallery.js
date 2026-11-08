@@ -1,6 +1,7 @@
 const pinKey = () => "minimax-refmod-gallery:" + localStorage.getItem("minimax-refmod-workspace");
 const limitKey = "minimax-refmod-gallery-limit";
 const loopKey = "minimax-refmod-player-loop";
+const continuousKey = "minimax-refmod-player-continuous";
 let inspectingUntil=0;
 
 // Chrome's native video controls can enter fullscreen on their own double-click.
@@ -49,10 +50,37 @@ function display(clicked) {
     const select = panel.querySelector("select");
     const remove = panel.querySelector(".delete-current");
     const repeat = panel.querySelector(".loop-playback");
-    player.loop = repeat.checked = localStorage.getItem(loopKey) === "true";
+    const continuous = panel.querySelector(".continuous-playback");
+    continuous.checked = localStorage.getItem(continuousKey) === "true";
+    player.loop = repeat.checked = !continuous.checked && localStorage.getItem(loopKey) === "true";
     repeat.onchange = () => {
         player.loop = repeat.checked;
         localStorage.setItem(loopKey,String(repeat.checked));
+        if (repeat.checked) {
+            continuous.checked = false;
+            localStorage.setItem(continuousKey,"false");
+        }
+    };
+    continuous.onchange = () => {
+        localStorage.setItem(continuousKey,String(continuous.checked));
+        if (continuous.checked) {
+            player.loop = repeat.checked = false;
+            localStorage.setItem(loopKey,"false");
+        }
+    };
+    player.onended = () => {
+        if (!continuous.checked) return;
+        const playlist = Array.from(element.querySelectorAll(".clip-tile"));
+        if (!playlist.length) return;
+        const index = playlist.findIndex(tile => tile.dataset.key === player.dataset.key);
+        const next = playlist[(index + 1) % playlist.length];
+        display(next);
+        player.currentTime = 0;
+        player.play().catch(error => {
+            if (error.name !== "AbortError" && player.dataset.key === next.dataset.key) {
+                panel.querySelector(".clip-caption").textContent += " · Press play to continue.";
+            }
+        });
     };
     const limit = Math.max(1, Math.min(20, parseInt(localStorage.getItem(limitKey),10) || 20));
     select.value = String(limit);

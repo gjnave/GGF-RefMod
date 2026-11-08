@@ -3,7 +3,7 @@
 Imports selected Comfy inference modules directly. No ComfyUI server/frontend.
 """
 from __future__ import annotations
-import contextlib, json, sys, time, traceback
+import contextlib, json, sys, time, traceback, uuid
 import video_profile
 import video_loras
 from config import saved_preset, sampling_settings, PRESETS
@@ -112,6 +112,15 @@ def create(request,engine):
         Image.fromarray((t.numpy()*255).astype('uint8')).save(preview)
     return {'files':details['saved_paths'],'details':result[1], 'reference_map':reference_map(result[0]),'preview':preview}
 
+def prepare_video_output(name):
+    root=(APP/'outputs').resolve()
+    path=(root/(name+'.mp4')).resolve()
+    if path.parent!=root:
+        raise ValueError('Video output must be inside the app output folder.')
+    if path.is_file():
+        path.rename(path.with_name(path.stem+'.interrupted-'+uuid.uuid4().hex[:8]+path.suffix))
+    return path
+
 def generate(request,engine):
     torch,nodes,ref,h3,sampling,upscale,video=engine
     from refmod.prompt import reference_map
@@ -120,7 +129,9 @@ def generate(request,engine):
     preset=saved_preset(request)
     adapter,steps,sampler_name,video_shift=sampling_settings(preset,request['steps'])
     require_models(([] if hybrid else ['base'])+['encoder','video_vae','audio_vae']+([adapter] if adapter else [])+(['upscaler','dmd','refiner'] if request['upscale'] else []))
-    emit('stage',message='Loading MiniMax H3 and text encoder')
+    # The inference lock is held here, including after waiting for an orphaned worker.
+    target=str(prepare_video_output(request['output_name']))
+    emit('stage',message='Loading MiniMax H3 and text encoder',phase='load')
     if hybrid:
         import comfy.sd
         checkpoint=video_profile.linked_path(profile)
@@ -149,7 +160,7 @@ def generate(request,engine):
         first=load_image(request['first_frame'])
     if request.get('last_frame'):
         last=load_image(request['last_frame'])
-    emit('stage',message='Encoding prompt and reference conditioning')
+    emit('stage',message='Encoding prompt and reference conditioning',phase='encode')
     with torch.no_grad():
         positive,latent=h3.MiniMaxH3ImageToVideo.execute(clip,vae,request['prompt'],request['width'],request['height'],request['frames'],first,last)
         if mods:
@@ -158,12 +169,12 @@ def generate(request,engine):
         sampler=sampling.KSamplerSelect.execute(sampler_name)[0]
         sigmas=sampling.BasicScheduler.execute(model,'simple',steps,1.0)[0]
         guider=sampling.BasicGuider.execute(model,positive)[0]
-        emit('stage',message=f'Generating video and audio: {PRESETS[preset][0]} ({steps} steps, {sampler_name})')
+        emit('stage',message=f'Generating video and audio: {PRESETS[preset][0]} ({steps} steps, {sampler_name})',phase='sample')
         latent=sampling.SamplerCustomAdvanced.execute(noise,guider,sampler,sigmas,latent)[1]
         if request['upscale']:
             import comfy.model_management as mm
             import comfy.nested_tensor
-            emit('stage',message='Upscaling video latents; preserving audio')
+            emit('stage',message='Upscaling video latents; preserving audio',phase='upscale')
             mm.unload_all_models()
             upmodel=upscale.LatentUpscaleModelLoader.execute(model_name('upscaler'))[0]
             latent=h3.MiniMaxH3LatentUpscaleWithModel.execute(upmodel,latent,request['up_width'],request['up_height'])[0]
@@ -177,20 +188,19 @@ def generate(request,engine):
             schedule=sampling.BasicScheduler.execute(refined,'simple',8,1.0)[0]
             # A low-noise tail actually provides two refinement steps.
             schedule=schedule[-(request['refine_steps']+1):]
-            emit('stage',message='Refining enlarged video')
+            emit('stage',message='Refining enlarged video',phase='refine')
             refine_sampler=sampling.KSamplerSelect.execute('res_multistep')[0]
             latent=sampling.SamplerCustomAdvanced.execute(noise,guider,refine_sampler,schedule,latent)[1]
             # Keep the original audio bit-for-bit in latent space.
             latent['samples']=comfy.nested_tensor.NestedTensor((latent['samples'].unbind()[0],a))
         import comfy.model_management as mm
         mm.unload_all_models()
-        emit('stage',message='Decoding video')
+        emit('stage',message='Decoding video',phase='decode_video')
         images=nodes.VAEDecode().decode(vae,latent)[0]
-        emit('stage',message='Decoding audio')
+        emit('stage',message='Decoding audio',phase='decode_audio')
         from comfy_extras.nodes_audio import vae_decode_audio
         audio=vae_decode_audio(audio_vae,latent)
-        emit('stage',message='Saving MP4')
-        target=str(APP/'outputs'/(request['output_name']+'.mp4'))
+        emit('stage',message='Saving MP4',phase='save')
         output=video.CreateVideo.execute(images,24.0,audio,bit_depth=8,color_space='sRGB')[0]
         metadata={'prompt':request['prompt'],'seed':str(request['seed']),'preset':PRESETS[preset][0]}
         if adapters:
@@ -210,6 +220,10 @@ def main():
     probe='--probe' in sys.argv
     request=json.loads(Path(sys.argv[1]).read_text()) if not probe else None
     try:
+        if request and request['kind']=='generate' and request.get('resume_from',0)>=request.get('batch',1):
+            files=request.get('completed_files',[])
+            emit('result',ok=True,files=files,video=files[-1] if files else None,details='All batch videos were already saved.')
+            return
         with contextlib.redirect_stdout(sys.stderr), (contextlib.nullcontext() if probe else inference_slot()):
             emit('stage',message='Starting private inference worker')
             clip_start=time.monotonic()
@@ -220,16 +234,16 @@ def main():
                 if request['kind']=='create':result=create(request,engine)
                 else:
                     results=[]
-                    for index in range(request.get('batch',1)):
+                    for index in range(request.get('resume_from',0),request.get('batch',1)):
                         job=dict(request,seed=(request['seed']+index)%(2**64),output_name=request['output_name']+f'-{index+1:02d}')
-                        emit('stage',message=f"Video {index+1} of {request.get('batch',1)}",clip_index=index+1)
+                        emit('stage',message=f"Video {index+1} of {request.get('batch',1)}",clip_index=index+1,phase='load')
                         results.append(generate(job,engine))
                         finished=time.monotonic()
                         record=results[-1]['record']
                         record['elapsed']=round(finished-clip_start,3)
                         emit('clip',file=results[-1]['video'],record=record)
                         clip_start=finished
-                    result=dict(results[-1],files=[f for r in results for f in r['files']],details='\n'.join(r['details'] for r in results))
+                    result=dict(results[-1],files=request.get('completed_files',[])+[f for r in results for f in r['files']],details='\n'.join(r['details'] for r in results))
         emit('result',ok=True,**result)
     except Exception as error:
         traceback.print_exc(file=sys.stderr)

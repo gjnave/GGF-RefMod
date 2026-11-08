@@ -5,6 +5,7 @@ from datetime import datetime
 from collections import deque, defaultdict
 from pathlib import Path
 from config import APP,JOBS,OUTPUTS,LIBRARY,initialize,read_settings
+import generation_eta
 
 initialize()
 LOCK=threading.RLock()
@@ -62,7 +63,11 @@ def start(token,request,controls=None):
         if generation:
             state['label']=' '.join(request['prompt'].split())[:100]
             state['batch_total']=request.get('batch',1)
+            if request.get('rerun_of'):
+                state['rerun_of']=request['rerun_of']
         write_json(folder/'request.json',request)
+        if generation:
+            saved.pop('reused_generation',None)
         saved.update(job=jobid,controls=controls or saved.get('controls',{}))
         save_workspace(token,saved)
         _write(state)
@@ -83,7 +88,25 @@ def _start_next():
             request=json.loads((Path(state['job_dir'])/'request.json').read_text(encoding='utf-8'))
             if state['kind']=='generate':
                 state['batch_total']=request.get('batch',1)
+                completed=len(state.get('result',{}).get('files',[]))
+                for index,file in enumerate(state.get('result',{}).get('files',[]),1):
+                    expected=OUTPUTS/f"Minimax-Refmod-{state['id']}-{index:02d}.mp4"
+                    if Path(file).resolve()!=expected.resolve():
+                        raise ValueError('Saved batch output does not belong to this job.')
+                request=dict(request,resume_from=completed,completed_files=list(state.get('result',{}).get('files',[])))
+                state['clip_index']=completed+1
+                if state.get('restart_count'):
+                    # Retain the original request and a separate request for each restart.
+                    attempt=Path(state['job_dir'])/f"request-restart-{state['restart_count']}.json"
+                    write_json(attempt,request)
+                    request['worker_request_path']=str(attempt)
+                history=[row for rows in GENERATIONS.values() for row in rows]
+                history.sort(key=lambda row: row.get('submitted',row.get('started',0)))
+                baseline=generation_eta.history(request,history)
+                state['timing']=generation_eta.initialize(request,baseline,time.time())
             state.update(status='running',stage='Starting',started=time.time())
+            for key in ('finished','progress','cancelled','cancel_reason'):
+                state.pop(key,None)
             _write(state)
             ACTIVE=state
             threading.Thread(target=_run,args=(state,request),daemon=True).start()
@@ -96,6 +119,7 @@ def restore_queue():
     """Rebuild waiting submissions once, at server startup."""
     with LOCK:
         recovered=[]
+        known={row['id'] for rows in GENERATIONS.values() for row in rows}
         for path in JOBS.glob('20*/status.json'):
             try:
                 state=json.loads(path.read_text(encoding='utf-8'))
@@ -103,6 +127,7 @@ def restore_queue():
                 print(f'Cannot read job status {path}: {exc}',file=sys.stderr)
                 continue
             if state.get('kind')!='generate':continue
+            if state['id'] in known:continue
             if Path(state.get('job_dir','')).resolve()!=path.parent.resolve():
                 # Copied queue entries must never run or write status in another installation.
                 print(f'Job path needs relocation: {path}',file=sys.stderr)
@@ -117,7 +142,17 @@ def restore_queue():
             if state['status']=='queued':
                 PENDING.append(state)
             elif state['status']=='running':
-                state.update(status='stopped',stage='Interrupted by app restart.',finished=time.time())
+                if state.get('cancelled') and state.get('cancel_reason')!='shutdown':
+                    state.update(status='stopped',stage='Stopped by user.',finished=time.time())
+                else:
+                    state.update(status='queued',stage='Restarting interrupted generation.',
+                                 restart_count=state.get('restart_count',0)+1)
+                    PENDING.append(state)
+                _write(state)
+            elif state['status']=='interrupted':
+                state.update(status='queued',stage='Restarting interrupted generation.',
+                             restart_count=state.get('restart_count',0)+1)
+                PENDING.append(state)
                 _write(state)
         _start_next()
 
@@ -186,6 +221,33 @@ def delete_clip(token,key,destination):
         source.rename(destination)
         return 'Video moved to outputs/Deleted videos.'
 
+def run_again(token,jobid):
+    with LOCK:
+        source=next((row for row in GENERATIONS.get(token,[]) if row['id']==jobid),None)
+        if source is None:
+            raise ValueError('Choose a recent submission from this workspace.')
+        if source['status'] in ('running','queued'):
+            raise ValueError('This submission is already running or waiting.')
+        existing=next((row for row in GENERATIONS[token]
+                       if row.get('rerun_of')==jobid and row['status'] in ('running','queued')),None)
+        if existing:
+            return existing['id'],False
+        folder=JOBS/jobid
+        if folder.resolve().parent!=JOBS.resolve():
+            raise ValueError('The saved submission is outside the app jobs folder.')
+        request=json.loads((folder/'request.json').read_text(encoding='utf-8'))
+        if request.get('kind')!='generate':
+            raise ValueError('This action requires a saved video generation.')
+        paths=list(request.get('mods',[]))+[a['path'] for a in request.get('loras',[])]
+        paths += [request[k] for k in ('audio','first_frame','last_frame') if request.get(k)]
+        missing=[str(path) for path in paths if not Path(path).is_file()]
+        if missing:
+            raise ValueError('Restore the saved input before running again: '+missing[0])
+        for key in ('job_dir','output_name','resume_from','completed_files','worker_request_path'):
+            request.pop(key,None)
+        request['rerun_of']=jobid
+        return start(token,request),True
+
 def cancel_waiting(token,jobid):
     with LOCK:
         for state in PENDING:
@@ -209,7 +271,7 @@ def _run(state,request):
             args+=['--keys',*request['keys']]
             if request.get('verify_hybrid'):
                 args+=['--verify-hybrid',request['verify_hybrid']]
-    else:args=[sys.executable,'-u',str(APP/'core_worker.py'),str(folder/'request.json')]
+    else:args=[sys.executable,'-u',str(APP/'core_worker.py'),request.get('worker_request_path',str(folder/'request.json'))]
     flags=getattr(subprocess,'CREATE_NO_WINDOW',0)
     try:
         with (folder/'worker.log').open('w',encoding='utf-8') as log:
@@ -234,20 +296,30 @@ def _run(state,request):
                         state['stage']=event['message']
                         if 'clip_index' in event:
                             state['clip_index']=event['clip_index']
+                        if kind=='generate' and state.get('timing'):
+                            generation_eta.stage(state['timing'],event.get('phase'),event.get('clip_index',state.get('clip_index',1)),time.time())
                         state.pop('progress',None)
                         state.pop('transfer',None)
-                    elif event.get('event')=='progress':state['progress']=[event['value'],event['total']]
+                    elif event.get('event')=='progress':
+                        state['progress']=[event['value'],event['total']]
+                        if kind=='generate' and state.get('timing'):
+                            generation_eta.progress(state['timing'],event['value'],event['total'],time.time())
                     elif event.get('event')=='clip' and kind=='generate':
                         files=state['result'].setdefault('files',[])
                         if event['file'] not in files:
                             files.append(event['file'])
                             if 'record' in event:
+                                if state.get('timing'):
+                                    generation_eta.clip_finished(state['timing'],event['record'],time.time())
                                 state.setdefault('clip_records',{})[Path(event['file']).name]=event['record']
                             _write(state)
                     elif event.get('event')=='result':answer=event
             code=process.wait()
         with LOCK:
-            if state.get('cancelled'):state.update(status='stopped',stage='Stopped. Saved files and partial downloads remain.')
+            if state.get('cancelled'):
+                interrupted=kind=='generate' and state.get('cancel_reason')=='shutdown'
+                state.update(status='interrupted' if interrupted else 'stopped',
+                             stage='Generation will restart when the app opens.' if interrupted else 'Stopped. Saved files and partial downloads remain.')
             elif code or (answer and not answer.get('ok')):
                 state.update(status='error',stage=(answer or {}).get('error',f'Worker exited with code {code}. See the job log.'))
             elif kind in ('download','verify','link'):
@@ -257,7 +329,10 @@ def _run(state,request):
                 state.update(status='complete',stage='Complete',result=answer)
             else:state.update(status='error',stage='Worker exited without a result. See the job log.')
     except Exception as e:
-        with LOCK:state.update(status='stopped' if state.get('cancelled') else 'error',stage=str(e))
+        with LOCK:
+            interrupted=kind=='generate' and state.get('cancel_reason')=='shutdown'
+            status='interrupted' if interrupted else ('stopped' if state.get('cancelled') else 'error')
+            state.update(status=status,stage=str(e))
     finally:
         with LOCK:
             state.pop('transfer',None)
@@ -267,11 +342,13 @@ def _run(state,request):
                 ACTIVE=None
                 _start_next()
 
-def stop(token):
+def stop(token,reason='user'):
     with LOCK:
         if not ACTIVE:return 'No active job.'
         if ACTIVE['token']!=token:raise ValueError('This job belongs to another browser workspace.')
         ACTIVE['cancelled']=True
+        ACTIVE['cancel_reason']=reason
+        _write(ACTIVE)
         if ACTIVE['kind']=='download':
             (Path(ACTIVE['job_dir'])/'stop-download').touch()
             return 'Stopping the download and saving its progress…'
@@ -306,6 +383,14 @@ def current(token):
             state.update(status='stopped',stage='The previous app session ended. Inputs and logs were preserved.')
         return state
 
+def generation_estimate(token):
+    with LOCK:
+        state=current(token) if token else None
+        estimate=None
+        if state and state.get('timing'):
+            estimate=generation_eta.estimate(state['timing'],state['status'],state['started'],state.get('finished') or time.time())
+        return state,estimate
+
 def release():
     if is_busy():raise ValueError('Stop or finish the active job first.')
     return 'GPU memory is released after every job. The interface remains open.'
@@ -315,6 +400,6 @@ def shutdown_workers():
     with LOCK:
         SHUTTING_DOWN=True
         if ACTIVE:
-            try:stop(ACTIVE['token'])
+            try:stop(ACTIVE['token'],reason='shutdown')
             except Exception:pass
 atexit.register(shutdown_workers)
