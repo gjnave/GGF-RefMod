@@ -485,7 +485,7 @@ def build_ui(remote=False):
                     with gr.Column():
                         count_options=''.join(f'<option value="{i}"{" selected" if i==20 else ""}>{i}</option>' for i in range(1,21))
                         gr.HTML('<video controls playsinline preload="metadata" aria-label="Generated video"></video><div class="clip-caption" aria-live="polite">Completed videos appear here.</div>'
-                                f'<div class="clip-tools"><label><input type="checkbox" class="loop-playback"> Loop playback</label><label>Videos shown <select aria-label="Videos shown">{count_options}</select></label><button type="button" class="delete-current" hidden>× Delete current video</button></div>',elem_id='clip-player')
+                                f'<div class="clip-tools"><label><input type="checkbox" class="loop-playback"> Loop playback</label><label>Thumbnails shown <select aria-label="Thumbnails shown">{count_options}</select></label><button type="button" class="delete-current" hidden>× Delete current video</button></div>',elem_id='clip-player')
                         with gr.Row():
                             gif_button=gr.Button('Convert to GIF',size='sm',elem_id='convert-to-gif')
                             gif_loop=gr.Checkbox(value=True,label='Loop GIF continuously')

@@ -1,7 +1,6 @@
 const pinKey = () => "minimax-refmod-gallery:" + localStorage.getItem("minimax-refmod-workspace");
 const limitKey = "minimax-refmod-gallery-limit";
 const loopKey = "minimax-refmod-player-loop";
-let selectTimer;
 let inspectingUntil=0;
 
 // Chrome's native video controls can enter fullscreen on their own double-click.
@@ -73,24 +72,20 @@ function display(clicked) {
     }
     let pinned = sessionStorage.getItem(pinKey());
     if (clicked) {
-        pinned = clicked === tiles[0] ? null : clicked.dataset.key;
-        if (pinned) sessionStorage.setItem(pinKey(), pinned);
-        else sessionStorage.removeItem(pinKey());
+        pinned = clicked.dataset.key;
+        sessionStorage.setItem(pinKey(), pinned);
     }
     const current = tiles.find(tile => tile.dataset.key === pinned) || tiles[0];
-    let visible = 1;
-    for (const tile of tiles) {
-        const show = tile !== current && visible < limit;
-        tile.parentElement.hidden = !show;
-        if (show) visible++;
-    }
+    tiles.forEach((tile,index) => {
+        tile.parentElement.hidden = index >= limit;
+        tile.setAttribute("aria-pressed",String(tile === current));
+    });
     player.dataset.key = current.dataset.key;
     remove.onclick = () => requestDelete(current,player);
     if (player.getAttribute("src") !== current.dataset.src) {
         player.src = current.dataset.src;
         caption.textContent = current.title;
     }
-    if (clicked) player.focus();
 }
 
 element.addEventListener("click", event => {
@@ -99,16 +94,11 @@ element.addEventListener("click", event => {
         return;
     }
     const tile = event.target.closest(".clip-tile");
-    if (tile) {
-        clearTimeout(selectTimer);
-        if (!event.detail) display(tile); // keyboard activation
-        else if (event.detail===1) selectTimer=setTimeout(()=>display(tile),550);
-    }
+    if (tile) display(tile);
 });
 element.addEventListener("dblclick", event => {
     const tile=event.target.closest(".clip-tile");
     if (!tile) return;
-    clearTimeout(selectTimer);
     display(tile);
     openDetails();
 });

@@ -13,7 +13,7 @@ Use Windows x64 with an NVIDIA GPU and a driver compatible with CUDA 13.0. Insta
 1. Clone this release from GitHub and enter its folder.
 
    ```bat
-   git clone --branch v0.9.5 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
+   git clone --branch v0.9.6 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
    cd Minimax-Refmod
    ```
 
@@ -72,13 +72,13 @@ Open **LoRAs (optional)** to select up to two additional MiniMax H3 video adapte
 
 Choose up to eight RefMods. Beside **Scene and sound**, click a numbered reference shortcut to insert a phrase such as `The Character from <Picture 2>` at the cursor. The links follow your selection order and number pictures, videos, and audio separately. Include motion, camera direction, dialogue, SFX, and music. Optional first/last images provide keyframes. A shared strength and retention control adjust the chosen references.
 
-Click **Generate Video** for the first submission. While it runs, change the prompt or settings and click **Add to queue**. Each submission saves its inputs and seed, and the app runs them in order on one GPU. The main player shows the latest finished clip. The other clips from your workspace appear as square thumbnails underneath. Click one to bring it into the player and return the previous clip to the strip. Your selection stays in view as more clips finish. Select the newest thumbnail to follow new arrivals again.
+Click **Generate Video** for the first submission. While it runs, change the prompt or settings and click **Add to queue**. Each submission saves its inputs and seed, and the app runs them in order on one GPU. Every finished clip appears in the thumbnail strip, newest first, including the clip in the main player. Click a thumbnail to select it. New clips enter the strip while your selected video stays in the player.
 
 The **Generation queue** box beneath the clip thumbnails shows the running submission and waiting positions. Use **Remove** on a waiting row or **Stop current job** to stop the active worker. Open **Recent submissions** for the last 20. Closing the browser leaves the queue running. After an app restart, waiting submissions resume and an interrupted generation is marked stopped.
 
 Double-click a finished thumbnail or the main video, or select **View project details**. This shows the prompt, model, seed, output length, dimensions, and timing. New clips record individual render times; job time excludes time spent waiting in the queue. Older clips show the information that is available. **Reuse these settings** fills in the form for one clip using its actual seed. Review or edit the form, then click **Generate Video** yourself. **Close details** leaves the form alone.
 
-**Videos shown** sets the gallery size from 1 to 20, including the main player. The browser remembers your choice. The newest clips fill the available places automatically. Click **×** on a thumbnail or **× Delete current video** under the player and confirm to send that MP4 directly to the Windows Recycle Bin. Use **Restore** in the Recycle Bin to return it to the gallery. The **Settings → Output gallery → Send deleted videos to the Windows Recycle Bin** checkbox applies only to Refmod. Uncheck it if you prefer to move clips to `outputs/Deleted videos/`.
+**Thumbnails shown** sets the strip size from 1 to 20. The browser remembers your choice. The newest clips fill the available places automatically. Click **×** on a thumbnail or **× Delete current video** under the player and confirm to send that MP4 directly to the Windows Recycle Bin. Use **Restore** in the Recycle Bin to return it to the gallery. The **Settings → Output gallery → Send deleted videos to the Windows Recycle Bin** checkbox applies only to Refmod. Uncheck it if you prefer to move clips to `outputs/Deleted videos/`.
 
 Turn on **Loop playback** to repeat the selected video in the main player. The player remembers this setting when you switch clips or refresh.
 
