@@ -61,6 +61,7 @@ def start(token,request,controls=None):
         state={'id':jobid,'token':token,'kind':request['kind'],'status':'queued','stage':'Waiting in queue','submitted':now,'started':now,'result':{},'job_dir':str(folder)}
         if generation:
             state['label']=' '.join(request['prompt'].split())[:100]
+            state['batch_total']=request.get('batch',1)
         write_json(folder/'request.json',request)
         saved.update(job=jobid,controls=controls or saved.get('controls',{}))
         save_workspace(token,saved)
@@ -80,6 +81,8 @@ def _start_next():
         state=PENDING.popleft()
         try:
             request=json.loads((Path(state['job_dir'])/'request.json').read_text(encoding='utf-8'))
+            if state['kind']=='generate':
+                state['batch_total']=request.get('batch',1)
             state.update(status='running',stage='Starting',started=time.time())
             _write(state)
             ACTIVE=state
@@ -229,6 +232,8 @@ def _run(state,request):
                         state['stage']='Downloading '+event['name']
                     elif event.get('event')=='stage':
                         state['stage']=event['message']
+                        if 'clip_index' in event:
+                            state['clip_index']=event['clip_index']
                         state.pop('progress',None)
                         state.pop('transfer',None)
                     elif event.get('event')=='progress':state['progress']=[event['value'],event['total']]

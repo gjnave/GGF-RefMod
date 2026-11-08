@@ -222,7 +222,7 @@ def main():
                     results=[]
                     for index in range(request.get('batch',1)):
                         job=dict(request,seed=(request['seed']+index)%(2**64),output_name=request['output_name']+f'-{index+1:02d}')
-                        emit('stage',message=f"Video {index+1} of {request.get('batch',1)}")
+                        emit('stage',message=f"Video {index+1} of {request.get('batch',1)}",clip_index=index+1)
                         results.append(generate(job,engine))
                         finished=time.monotonic()
                         record=results[-1]['record']

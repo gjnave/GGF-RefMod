@@ -259,14 +259,24 @@ body, .gradio-container {
 #clip-player .clip-tools {display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;}
 #clip-player .clip-tools select,#clip-player .delete-current {padding:4px 8px;border:1px solid #51627c;border-radius:5px;color:#e8eef9;background:#152137;}
 #generation-queue ul {list-style:none;margin:0;padding:0;}
-#generation-queue {max-height:24rem;overflow:auto;}
+#generation-queue {max-height:24rem;overflow:auto;background:#fff!important;color:#000!important;padding:10px;border-radius:6px;}
 #queue-box {padding:12px;border:1px solid #51627c;background:#111c2f;border-radius:8px;}
+#queue-box h3 {color:#e8eef9!important;}
+#generation-queue :is(ul,li,p,span,strong,details,summary) {color:#000!important;}
+#generation-queue a {color:#164e9f!important;text-decoration:underline;}
 .gradio-container:not(:has(#clip-player video[data-key])) #inspect-project {visibility:hidden;}
 #generation-queue li {display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;border-bottom:1px solid #344b6e;padding:.45rem 0;}
 #generation-queue li span {flex:1;min-width:8em;overflow-wrap:anywhere;}
-#generation-queue button {border:1px solid #51627c;border-radius:5px;background:#192d47;color:#e8eef9;padding:.25rem .7rem;cursor:pointer;}
+#generation-queue button {border:1px solid #51627c;border-radius:5px;background:#192d47!important;color:#fff!important;padding:.25rem .7rem;cursor:pointer;}
 .project-facts {display:grid;grid-template-columns:auto 1fr;gap:.3rem .8rem;margin:0 0 .8rem;}
 #project-details .project-sheet {background:#fff;color:#000;padding:16px;border-radius:8px;}
 #project-details .project-sheet :is(h3,dt,dd,strong,p) {color:#000!important;}
 .project-facts dt {font-weight:600;}.project-facts dd {margin:0;overflow-wrap:anywhere;}
 .project-prompt {white-space:pre-wrap;overflow-wrap:anywhere;}
+.generation-progress {border:1px solid #51627c;border-radius:8px;background:#111c2f;color:#e8eef9;padding:12px;}
+.generation-progress div {overflow-wrap:anywhere;margin:4px 0;}
+.generation-progress span {display:block;color:#dbeafe;font-size:14px;}
+.generation-progress progress {display:block;width:100%;height:14px;margin:8px 0;accent-color:#f5b942;border:0;border-radius:7px;overflow:hidden;}
+.generation-progress progress::-webkit-progress-bar {background:#25344a;border-radius:7px;}
+.generation-progress progress::-webkit-progress-value {background:#f5b942;border-radius:7px;}
+.generation-progress progress::-moz-progress-bar {background:#f5b942;border-radius:7px;}

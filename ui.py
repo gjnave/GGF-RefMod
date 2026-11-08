@@ -362,6 +362,34 @@ def convert_to_gif(token,key,loop):
     name=html.escape(path.name,quote=True)
     return f'<a href="{url}" download="{name}">Download GIF</a> · {name}<details><summary>Preview GIF</summary><img src="{url}" alt="Exported animated GIF" style="max-width:100%"></details>'
 
+def generation_progress(token,previous):
+    state=runtime.current(token) if token else None
+    content=''
+    if state and state['kind']=='generate':
+        status=state['status']
+        stage=html.escape(state['stage'])
+        batch=state.get('batch_total',1)
+        clip=state.get('clip_index',len(state.get('result',{}).get('files',[]))+1)
+        title=f'Video {min(clip,batch)} of {batch}' if batch>1 else 'Video generation'
+        value=''
+        detail=''
+        progress=state.get('progress')
+        if status=='complete':
+            value=' value="100"'
+            detail='100%'
+        elif status=='running' and progress and progress[1]>0:
+            step,total=progress
+            percent=max(0,min(100,100*step/total))
+            value=f' value="{percent:g}"'
+            detail=f'{step:g} / {total:g} · {percent:.0f}% of this stage'
+        if status in ('running','complete'):
+            bar=f'<progress max="100"{value} aria-label="Video generation progress"></progress>'
+        else:
+            bar=''
+        content=f'<div class="generation-progress"><strong>{title}</strong><div>{stage}</div>{bar}<span>{detail}</span></div>'
+    if content==previous:return gr.skip(),gr.skip()
+    return gr.update(value=content,visible=bool(content)),content
+
 def poll(token,last_seen):
     if not token:return [gr.skip()]*10
     state=runtime.current(token);busy=runtime.is_busy()
@@ -484,6 +512,8 @@ def build_ui(remote=False):
                         stop2=gr.Button('Stop current job')
                     with gr.Column():
                         count_options=''.join(f'<option value="{i}"{" selected" if i==20 else ""}>{i}</option>' for i in range(1,21))
+                        generation_bar=gr.HTML('',visible=False,elem_id='generation-progress')
+                        progress_marker=gr.State('')
                         gr.HTML('<video controls playsinline preload="metadata" aria-label="Generated video"></video><div class="clip-caption" aria-live="polite">Completed videos appear here.</div>'
                                 f'<div class="clip-tools"><label><input type="checkbox" class="loop-playback"> Loop playback</label><label>Thumbnails shown <select aria-label="Thumbnails shown">{count_options}</select></label><button type="button" class="delete-current" hidden>× Delete current video</button></div>',elem_id='clip-player')
                         with gr.Row():
@@ -614,6 +644,7 @@ def build_ui(remote=False):
         end.click(stop_server,confirm,end_status,queue=False)
         ui.load(restore,browser_token,[token,prompt,selected,aspect,mp,duration,seed,preset,upscale,media,audio,name,mode,concept,description,first,last,*slots,steps,run_model,strength,retention,upmp,refinesteps,batch],js=RESTORE_JS,queue=False)
         timer=gr.Timer(1)
+        timer.tick(generation_progress,[token,progress_marker],[generation_bar,progress_marker],queue=False,show_progress='hidden')
         if not remote:
             timer.tick(link_progress,[token,link_job],[link_status,link_job,active_model,models],queue=False,show_progress='hidden')
         timer.tick(poll,[token,last_seen],[activity,make,go,downloads,details,log,last_seen,models,transfer_info,reconnect_btn],queue=False)
