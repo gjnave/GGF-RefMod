@@ -71,6 +71,16 @@ function display(clicked) {
         return;
     }
     let pinned = sessionStorage.getItem(pinKey());
+    const seenKey = pinKey() + ":seen-clips";
+    let seen = [];
+    try { seen = JSON.parse(sessionStorage.getItem(seenKey) || "[]"); }
+    catch { /* Older or cleared browser state starts with the visible clips. */ }
+    const newest = tiles[0].dataset.key;
+    if (Array.isArray(seen) && seen.length && !seen.includes(newest)) {
+        pinned = newest;
+        sessionStorage.setItem(pinKey(), pinned);
+    }
+    sessionStorage.setItem(seenKey,JSON.stringify(tiles.map(tile => tile.dataset.key)));
     if (clicked) {
         pinned = clicked.dataset.key;
         sessionStorage.setItem(pinKey(), pinned);

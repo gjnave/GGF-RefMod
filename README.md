@@ -13,7 +13,7 @@ Use Windows x64 with an NVIDIA GPU and a driver compatible with CUDA 13.0. Insta
 1. Clone this release from GitHub and enter its folder.
 
    ```bat
-   git clone --branch v0.9.8 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
+   git clone --branch v0.9.9 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
    cd Minimax-Refmod
    ```
 
@@ -72,7 +72,7 @@ Open **LoRAs (optional)** to select up to two additional MiniMax H3 video adapte
 
 Choose up to eight RefMods. Beside **Scene and sound**, click a numbered reference shortcut to insert a phrase such as `The Character from <Picture 2>` at the cursor. The links follow your selection order and number pictures, videos, and audio separately. Include motion, camera direction, dialogue, SFX, and music. Optional first/last images provide keyframes. A shared strength and retention control adjust the chosen references.
 
-Click **Generate Video** for the first submission. While it runs, change the prompt or settings and click **Add to queue**. Each submission saves its inputs and seed, and the app runs them in order on one GPU. Every finished clip appears in the thumbnail strip, newest first, including the clip in the main player. Click a thumbnail to select it. New clips enter the strip while your selected video stays in the player.
+Click **Generate Video** for the first submission. While it runs, change the prompt or settings and click **Add to queue**. Each submission saves its inputs and seed, and the app runs them in order on one GPU. Every finished clip appears in the thumbnail strip, newest first, including the clip in the main player. Click a thumbnail to select it. Each newly finished clip becomes the active video in the main player. All thumbnails stay in the strip, and you can click any one to view it.
 
 The **Generation queue** box beneath the clip thumbnails shows the running submission and waiting positions. Use **Remove** on a waiting row or **Stop current job** to stop the active worker. Open **Recent submissions** for the last 20. Closing the browser leaves the queue running. After an app restart, waiting submissions resume and an interrupted generation is marked stopped.
 
