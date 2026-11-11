@@ -86,5 +86,32 @@
     "path": "loras/minimax_h3_dmd_fl2va_8step_turbo_pruned.safetensors",
     "size": 2285989092,
     "sha256": "9104b190815d8f6f49c77e313988a9a0561a59b3ee611231b8cc421ad050bd2c"
+  },
+  {
+    "key": "pika_fl2va",
+    "repo": "Comfy-Org/MiniMax-H3",
+    "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+    "remote": "loras/pika_h3_flex_fl2va_v1_bf16.safetensors",
+    "path": "loras/pika_h3_flex_fl2va_v1_bf16.safetensors",
+    "size": 1956172304,
+    "sha256": "cc5453aeecd6189468409003fe4cf1b57e52ff3a830a0a154b87decbe07358b7"
+  },
+  {
+    "key": "pika_ref2va",
+    "repo": "Comfy-Org/MiniMax-H3",
+    "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+    "remote": "loras/pika_h3_flex_ref2va_v1_bf16.safetensors",
+    "path": "loras/pika_h3_flex_ref2va_v1_bf16.safetensors",
+    "size": 1956172304,
+    "sha256": "de3745ceb7d8d5c20898dd8fa3a05f1c0b00089ccd55297b2a8bab95c766b0e0"
+  },
+  {
+    "key": "pika_base",
+    "repo": "Comfy-Org/MiniMax-H3",
+    "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+    "remote": "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "path": "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "size": 20970379616,
+    "sha256": "9255f52b6677845ad238f20dfaafa94727053694127ab7f255c048f0f9365779"
   }
 ]

@@ -9,12 +9,16 @@ OUTPUTS = APP / 'outputs'
 LIBRARY = MODELS / 'refmods'
 MANIFEST = json.loads((APP / 'models.lock.json').read_text())
 FILES = {x['key']: x for x in MANIFEST}
-VERSION = '0.10.0'
+VERSION = '0.11.1'
+DEFAULT_PRESET = 'pika_auto'
 
 # (UI label, managed adapter, fixed steps, first-pass sampler, video shift)
 PRESETS = {
+    'pika_auto': ('Pika Flex · automatic (default, 6 steps)', None, 6, 'lcm', 12.0),
     'turbo': ('Turbo (8 steps)', 'turbo', 8, 'res_multistep', 12.0),
     'fast': ('Fast Preview (4 steps)', 'fast_preview', 4, 'euler', 6.0),
+    'pika': ('Pika Flex · text / first-last (6 steps)', 'pika_fl2va', 6, 'lcm', 12.0),
+    'pika_refs': ('Pika Flex · RefMods (6 steps)', 'pika_ref2va', 6, 'lcm', 12.0),
     'custom': ('Custom steps', None, None, 'res_multistep', 12.0),
 }
 FAST_DOWNLOAD = 'Fast Preview adapter only (1.96 GB)'

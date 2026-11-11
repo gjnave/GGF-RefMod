@@ -14,6 +14,7 @@
 !/core_worker.py
 !/download_models.py
 !/gif_export.py
+!/shot_lineup.py
 !/media_previews.py
 !/model_transfer.py
 !/project_history.py
@@ -23,6 +24,7 @@
 !/ui.py
 !/video_loras.py
 !/video_profile.py
+!/pika_profile.py
 !/assets/
 !/vendor/
 !/workflows/

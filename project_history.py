@@ -5,6 +5,7 @@ import html
 import config as cfg
 import runtime
 import video_profile
+import pika_profile
 
 
 def project(token,key):
@@ -62,7 +63,7 @@ def legacy_canvas(r,aspect=None,up=False):
 def reuse_values(p,library,adapters):
     r=p['req']; f=r.get('form',{}); model=p['model']
     profile=video_profile.settings()
-    checkpoint=video_profile.linked_path(profile) if model==video_profile.HYBRID else cfg.model_file('base')
+    checkpoint=video_profile.linked_path(profile) if model==video_profile.HYBRID else cfg.model_file(pika_profile.model_key(cfg.saved_preset(r)))
     if p['checkpoint_bytes'] and (not checkpoint.is_file() or checkpoint.stat().st_size!=p['checkpoint_bytes']):
         raise ValueError('Link the checkpoint shown in Project details in Settings before reusing this project.')
     if 'aspect' in f:aspect,mp,upmp=f['aspect'],f['mp'],f['upmp']

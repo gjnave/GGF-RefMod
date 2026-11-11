@@ -8,6 +8,8 @@ RefMod source under `vendor/refmod` is from Luisacaotica/ComfyUI-MiniMaxH3Mod, c
 
 Model weights are downloaded separately from their publishers. Their licenses are independent of the Python source licenses. The pinned repositories, revisions, filenames, sizes, and hashes are in `models.lock.json`.
 
+Pika H3 Flex adapters are published by Pika Labs and distributed in the pinned Comfy-Org/MiniMax-H3 repository. See https://huggingface.co/Pika-Labs/Pika-H3-Flex and its model license. The optional Pika presets follow the native six-step LCM schedule. No third-party workflow extensions, sparse-attention gates or Semantic Bridge code are bundled.
+
 INSTALL.bat retrieves the official [aria2 1.37.0 Windows x64 release](https://github.com/aria2/aria2/releases/tag/release-1.37.0) and verifies its archive SHA-256 before extraction. The upstream license and documentation accompany the executable under `runtime/tools`.
 
 Get Going Fast branding and the supplied about/disclaimer assets belong to their respective owner. They do not alter the upstream code or model licenses.

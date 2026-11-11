@@ -42,7 +42,7 @@ def check_adapter(path):
 
 
 def managed_files():
-    return {path.resolve() for key in ('turbo','fast_preview','dmd','refiner')
+    return {path.resolve() for key in ('turbo','fast_preview','dmd','refiner','pika_fl2va','pika_ref2va')
             for path in (cfg.model_file(key), cfg.MODELS/cfg.FILES[key]['path'])}
 
 def link(location):

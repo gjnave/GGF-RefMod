@@ -197,6 +197,51 @@ def clip_project(token,key):
         elapsed=(state['finished']-state['started']) if state.get('finished') and state.get('started') else None
         return source,int(number),request,record,elapsed
 
+def edit_lineup(token,action,key=None,direction=None):
+    with LOCK:
+        saved=load_workspace(token)
+        lineup=list(saved.get('shot_lineup',[]))
+        if action=='add':
+            if not workspace_clip_path(token,key).is_file():raise ValueError('This shot is no longer available.')
+            if key not in lineup:lineup.append(key)
+        elif action=='remove':
+            if key in lineup:lineup.remove(key)
+        elif action=='move':
+            if key not in lineup or direction not in (-1,1):raise ValueError('Choose a shot and direction.')
+            index=lineup.index(key);target=index+direction
+            if 0<=target<len(lineup):lineup[index],lineup[target]=lineup[target],lineup[index]
+        elif action=='clear':
+            lineup=[]
+            saved.pop('latest_stitch',None)
+        elif action=='dismiss-stitch':saved.pop('latest_stitch',None)
+        else:raise ValueError('Choose a lineup action.')
+        saved['shot_lineup']=lineup
+        save_workspace(token,saved)
+
+
+def lineup_sources(token):
+    with LOCK:
+        keys=list(load_workspace(token).get('shot_lineup',[]))
+        if len(keys)<2:raise ValueError('Add at least two shots to the lineup before stitching.')
+        sources=[workspace_clip_path(token,key) for key in keys]
+        if any(not p.is_file() for p in sources):raise ValueError('Remove unavailable shots from the lineup first.')
+        return keys,sources
+
+
+def favorite_clip(token,key,favorite):
+    """Persist a favorite only for an existing output owned by this workspace."""
+    if not isinstance(favorite,bool):raise ValueError('Choose whether to favorite this clip.')
+    with LOCK:
+        source=workspace_clip_path(token,key)
+        if not source.is_file():raise ValueError('This clip is no longer in the gallery.')
+        saved=load_workspace(token)
+        favorites=set(saved.get('favorite_clips',[]))
+        if favorite:favorites.add(key)
+        else:favorites.discard(key)
+        saved['favorite_clips']=sorted(favorites)
+        save_workspace(token,saved)
+
+
 def delete_clip(token,key,destination):
     """Move only an owned, generated MP4. Its original batch index stays stable."""
     with LOCK:

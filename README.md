@@ -13,11 +13,11 @@ Use Windows x64 with an NVIDIA GPU and a driver compatible with CUDA 13.0. Insta
 1. Clone this release from GitHub and enter its folder.
 
    ```bat
-   git clone --branch v0.10.0 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
+   git clone --branch v0.11.1 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
    cd Minimax-Refmod
    ```
 
-   The same release is on [Codeberg](https://codeberg.org/Cognibuild/MiniMax-RefMod-GGF). To use that mirror, substitute `https://codeberg.org/Cognibuild/MiniMax-RefMod-GGF.git` in the clone command.
+   A secondary source mirror is on [Codeberg](https://codeberg.org/Cognibuild/MiniMax-RefMod-GGF). Mirror tags can lag; the Windows installer also has a verified Get Going Fast source-download fallback.
 
 2. Create the private Python environment and install the CUDA build of PyTorch and the app requirements.
 
@@ -51,6 +51,24 @@ If an update changes Python dependencies, the updater builds a separate environm
 
 ## Models
 
+### Pika H3 Flex (default in 0.11.1)
+
+The default generation preset is **Pika Flex · automatic**. It selects the Pika image-RefMod task when references are selected, or Pika text / first-last otherwise. Pika uses its matching native INT8 model rather than GrizzlyMax INT4. On the first launch of this update, old generation defaults migrate to Pika; the previous controls are retained in the private workspace state. Later explicit preset choices and project reuse remain available.
+
+In **Settings → Models to manage**, choose **Pika default models (text + image RefMods)**, then **Download missing models**. The complete automatic-mode set is approximately **67.35 GB** on a fresh installation. The smaller **Pika text / first-last models** and **Pika image RefMod models** sets are also available. Existing verified encoders and VAEs are reused. Each complete Pika set is approximately 44.43 GB on a fresh install. On an existing standard INT8 installation, text/first-last adds a 1.96 GB adapter; image RefMods adds its own 20.97 GB Ref2VA checkpoint and 1.96 GB adapter. All three optional downloads have pinned revisions and SHA-256 hashes. They are excluded from the older complete/Turbo download set.
+
+You can also choose either Pika task explicitly in Generate. Both modes use the matching native INT8 checkpoint, their own adapter at strength 1.0, CFG 1, LCM and the trained six-step sigma schedule. The Settings model default is preserved. An explicit GrizzlyMax INT4 selection is blocked for Pika. Turbo and Fast Preview remain available with their original settings.
+
+Text / first-last supports a prompt and optional endpoint images. **Pika RefMods** requires at least one saved image RefMod and uses the separate Ref2VA checkpoint. This build blocks video/audio RefMods in Pika pending separate validation, including members inside bundles. Native generated audio remains enabled. Image bundles can contain up to nine images, while the library selector retains its existing eight-file limit. Extra LoRAs, the current upscale/refine pass, and combining endpoint frames with Pika RefMods are blocked. The interface clears and disables incompatible controls; validation also runs inside the worker for queued requests. Warnings and control restrictions return after reloading the page.
+
+Release smoke test on the RTX 4090, using the same saved image RefMod, prompt, seed and 124-frame 1024×576 output: Pika generation took 88.84 seconds versus 99.45 seconds for GrizzlyMax INT4 Turbo. Including separate worker startup and exit, the measured runs were 93.53 and 101.80 seconds (about 8% less elapsed time). This is one matched smoke comparison, not a general hardware benchmark.
+
+Pika duration is 5–15 seconds, snapped upward to the model's `17k+5` frame grid at 24 fps. Start at 0.6 MP / 5 seconds. The initial real-GPU tests on an RTX 4090 produced 124-frame 1024×576 MP4s with native 32 kHz audio in both modes. Text mode took 100.95 seconds with 20,642 MiB peak PyTorch reserved memory; one saved-image RefMod took 81.61 seconds with 20,664 MiB. These are measurements of this configuration, not whole-device VRAM minima or a benchmark against Turbo. 12/16 GB support has not been validated here. VSA and Semantic Bridge are not part of these presets.
+
+The 0.11.1 release includes Pika, favorites, thumbnail pagination, shot lineups, MP4 stitching and app updates. The member ZIP contains only the Windows entry points and notices; INSTALL.bat fetches pinned source and models remain managed inside the app.
+
+References: [Pika Labs model card](https://huggingface.co/Pika-Labs/Pika-H3-Flex), [native Comfy tutorial](https://docs.comfy.org/tutorials/video/pika/pika-h3-flex), and [the supplied community workflow](https://huggingface.co/Thelocallab/Pika-H3-Flex-ComfyUI-Workflow).
+
 To use GrizzlyMax INT4, choose **Settings → Link and Use GrizzlyMax Models** and select its models folder. You can also paste the checkpoint path in the GrizzlyMax field and press Enter. A verified hybrid becomes the active video model. This selection applies to future jobs using the Settings default.
 
 The RefMod creator set is approximately **5.81 GB**: video and audio VAEs. Creating only visual RefMods needs the video VAE; audio-only references need the audio VAE.
@@ -70,7 +88,7 @@ The MiniMax H3 INT8 video model accepts the official FL2VA pruned (20.97 GB) and
 
 Upload images/videos and optionally an audio clip. Full Reference retains encoded detail. Compressed Reference pools the latent representation and can refine that representation; it does not train the MiniMax diffusion model or create a LoRA. Exact facial identity can deteriorate with compression.
 
-Choose a name and purpose such as identity, clothing, style, motion, or background. Advanced controls expose reference resolution, input-frame sampling, token budgets, pooling, latent-frame limits, audio duration/type, and separate-file versus bundle saving. Images are normalized using their displayed EXIF orientation. Videos are sampled over the clip rather than simply taking the opening frames. Embedded video audio is not implicitly extracted; provide an audio reference separately.
+Choose a name and purpose such as identity, clothing, style, motion, or background. Advanced controls expose reference resolution, input-frame sampling, token budgets, pooling, video temporal limits, audio duration/type, and separate-file versus bundle saving. Images are normalized using their displayed EXIF orientation. Videos are sampled over the clip rather than simply taking the opening frames. Full Reference defaults to a 56-source-frame temporal limit; the older limit of 16 could reduce video references to a still. Use 22 or more to retain multiple temporal frames, subject to the source length and token budget. Compressed Reference interprets this field as its latent-frame limit. Embedded video audio is not implicitly extracted; provide an audio reference separately.
 
 Each uploaded reference appears directly below its input. Images display inline; videos and audio have playback controls. For clips that need conversion for browser playback, the app shows a labeled preview of up to 15 seconds. Creation always uses the original file. The optional first and last frame inputs also show their selected images.
 
@@ -78,7 +96,7 @@ Saved files live under `models/refmods/`. Names include a unique job suffix to p
 
 ## Generate Video
 
-Under **Generation preset**, choose **Turbo (8 steps)** for the default workflow, **Fast Preview (4 steps)** for a quicker draft, or **Custom steps** to choose a step count without a built-in speed adapter. Fast Preview uses the LightX2V FL2V v1.2 adapter with Euler, a simple schedule and video/audio shifts of 6/3. To install just this optional adapter, go to **Settings → Fast Preview adapter only (1.96 GB) → Download missing models**, or use **Browse and Use MiniMax Models** with the folder containing the file. It is separate from the standard 47.56 GB model set. Existing installations can reuse their video model, including the linked GrizzlyMax INT4 hybrid.
+Under **Generation preset**, **Pika Flex · automatic** is the default. For video/audio RefMods, extra LoRAs or the existing upscale workflow, choose **Turbo (8 steps)**, **Fast Preview (4 steps)** for a quicker draft, or **Custom steps** to choose a step count without a built-in speed adapter. Fast Preview uses the LightX2V FL2V v1.2 adapter with Euler, a simple schedule and video/audio shifts of 6/3. To install just this optional adapter, go to **Settings → Fast Preview adapter only (1.96 GB) → Download missing models**, or use **Browse and Use MiniMax Models** with the folder containing the file. It is separate from the standard 47.56 GB model set. Existing installations can reuse their video model, including the linked GrizzlyMax INT4 hybrid.
 
 Open **LoRAs (optional)** to select up to two additional MiniMax H3 video adapters and set their strengths independently. Use **Browse for LoRA** and **Link LoRA** on the PC to reuse a local `.safetensors` file in place. Files already under `models/loras` appear with **Refresh LoRA list**. Choose **No LoRA** to clear a slot. The selected adapters affect both generation and optional refinement. A strength of zero skips the adapter. Choose **Custom steps** when using your own speed LoRA.
 
@@ -90,7 +108,7 @@ The **Generation queue** box beneath the clip thumbnails shows the running submi
 
 Choose **Run again** on a recent submission to queue a fresh generation with its saved prompt, seed, models, references and settings. Saved outputs from the earlier submission stay in the gallery.
 
-Double-click a selected label, or focus it and press **Enter**, to choose one replacement. Choosing a RefMod that is already selected swaps their positions. **Alt + Arrow keys** also reorder focused labels. Prompt labels and reference shortcuts follow that order. The order is saved for the workspace and applies to future submissions.
+Use the small **↑ / ↓** buttons on each selected RefMod label to move it earlier or later. The selected labels move into their new order. Double-click a selected label, or focus it and press **Enter**, to choose one replacement. Choosing a RefMod that is already selected swaps their positions. **Alt + Arrow keys** also reorder focused labels. Prompt labels and reference shortcuts follow that order. The order is saved for the workspace and applies to future submissions.
 
 The progress bar estimates completion of the whole submission, including every video in a batch. It shows elapsed time and estimated time remaining. Estimates use saved timings from matching render settings and update with live sampling speed. The first run shows **Estimating time left** until timing data is available. Loading, refinement, decoding and saving count toward the bar. Estimates can change as the PC's speed changes.
 
@@ -98,11 +116,17 @@ Double-click a finished thumbnail or the main video, or select **View project de
 
 Click **Reuse prompt & settings** beneath the active player to restore its prompt, ordered RefMods, LoRAs, seed mode, model, dimensions, duration, sampling and upscale settings, frame inputs and batch count. Random stays random. An explicitly numbered seed restores the active clip's seed. The actual generated seed is always available in project details. Review the restored form before submitting.
 
-**Thumbnails shown** sets the strip size from 1 to 20. The browser remembers your choice. The newest clips fill the available places automatically. Click **×** on a thumbnail or **× Delete current video** under the player and confirm to send that MP4 directly to the Windows Recycle Bin. Use **Restore** in the Recycle Bin to return it to the gallery. The **Settings → Output gallery → Send deleted videos to the Windows Recycle Bin** checkbox applies only to Refmod. Uncheck it if you prefer to move clips to `outputs/Deleted videos/`.
+**Thumbnails shown** offers 1 to 20 clips per page or **All**. Use **Previous** and **Next** below the thumbnails to browse every saved clip without changing the active video. The browser remembers your choice. New clips become active and return the thumbnails to the first page. On narrow screens, the player and gallery stack below the generation controls. Click **×** on a thumbnail or **× Delete current video** under the player and confirm to send that MP4 directly to the Windows Recycle Bin. Use **Restore** in the Recycle Bin to return it to the gallery. The **Settings → Output gallery → Send deleted videos to the Windows Recycle Bin** checkbox applies only to Refmod. Uncheck it if you prefer to move clips to `outputs/Deleted videos/`.
+
+Click **☆** on a thumbnail or **☆ Favorite** beneath the player to save an output as a favorite. Click the filled star to remove it. Choose **Show → Favorites** to browse only starred clips; pagination and Continuous play use that filtered list. Favorites are saved with the workspace across app restarts. Filtering leaves the active video in the player.
 
 Turn on **Loop playback** to repeat the selected video in the main player. The player remembers this setting when you switch clips or refresh.
 
 Turn on **Continuous play** to advance through saved videos in gallery order, wrapping to the first after the last. It includes videos beyond the visible thumbnail limit. Selecting Continuous play switches off Loop playback, and selecting Loop playback switches off Continuous play.
+
+Select the checkbox on each output thumbnail, or click **Add to lineup** beneath the player. The **Shot lineup** box keeps your selection across pages, filters and app restarts. Move shots with **↑ / ↓**, remove individual shots, or use **Clear lineup & preview** to reset the selection and stitched preview. These actions leave the original videos intact. **Play lineup** plays the selected shots in order and stops after the last; **Stop lineup** pauses playback.
+
+Click **Stitch lineup into MP4** to combine at least two shots into one downloadable video. The export uses the first shot’s canvas at 24 fps, fits other aspect ratios with padding, keeps their audio and fills missing audio with silence. Exports and their shot-order receipts are saved in `outputs/Stitched videos/`. The latest export preview and download return when the app opens again. **Clear stitched preview** dismisses just that preview while keeping your shot selection. Both clear controls leave exported MP4 files saved on disk, and cleared previews stay dismissed after restarting.
 
 To export the selected video as a looping GIF, click **Convert to GIF**, then **Preview GIF** or **Download GIF**. GIFs contain the full clip without audio and are saved in `outputs/GIFs/` at up to 12 frames per second and 640 pixels on the longest side. The original video stays in the gallery.
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import contextlib, json, sys, time, traceback, uuid
 import video_profile
 import video_loras
+import pika_profile
 from config import saved_preset, sampling_settings, PRESETS
 from fractions import Fraction
 from pathlib import Path
@@ -123,12 +124,18 @@ def prepare_video_output(name):
 
 def generate(request,engine):
     torch,nodes,ref,h3,sampling,upscale,video=engine
+    request=dict(request,preset=pika_profile.resolve(saved_preset(request),request.get('mods',[])))
+    pika_profile.validate(request)
     from refmod.prompt import reference_map
     profile=request.get('video_profile',{'active':video_profile.INT8})
     hybrid=profile['active']==video_profile.HYBRID
     preset=saved_preset(request)
     adapter,steps,sampler_name,video_shift=sampling_settings(preset,request['steps'])
-    require_models(([] if hybrid else ['base'])+['encoder','video_vae','audio_vae']+([adapter] if adapter else [])+(['upscaler','dmd','refiner'] if request['upscale'] else []))
+    base_key=pika_profile.model_key(preset)
+    require_models(([] if hybrid else [base_key])+['encoder','video_vae','audio_vae']+([adapter] if adapter else [])+(['upscaler','dmd','refiner'] if request['upscale'] else []))
+    mods=load_mods(request['mods'],request['strengths'])
+    if preset=='pika_refs':
+        pika_profile.validate_references(mods)
     # The inference lock is held here, including after waiting for an orphaned worker.
     target=str(prepare_video_output(request['output_name']))
     emit('stage',message='Loading MiniMax H3 and text encoder',phase='load')
@@ -138,7 +145,7 @@ def generate(request,engine):
         base=comfy.sd.load_diffusion_model(str(checkpoint))
     else:
         import folder_paths
-        base_name=model_name('base')
+        base_name=model_name(base_key)
         checkpoint=Path(folder_paths.get_full_path_or_raise('diffusion_models',base_name))
         base=nodes.UNETLoader().load_unet(base_name,'default')[0]
     clip=nodes.CLIPLoader().load_clip(model_name('encoder'),'minimax','default')[0]
@@ -151,10 +158,13 @@ def generate(request,engine):
         path=model_file(adapter)
         stat=path.stat()
         model=video_loras.apply(base,[dict(path=str(path),size=stat.st_size,mtime=stat.st_mtime_ns,strength=1)],lambda msg:emit('stage',message=msg))
-    elif adapter=='turbo':
-        model=nodes.LoraLoaderModelOnly().load_lora_model_only(base,model_name('turbo'),1.0)[0]
+    elif adapter in ('turbo','pika_fl2va','pika_ref2va'):
+        model=nodes.LoraLoaderModelOnly().load_lora_model_only(base,model_name(adapter),1.0)[0]
+        if pika_profile.enabled(preset):
+            matched=sum(len(value) for value in model.patches.values())-sum(len(value) for value in base.patches.values())
+            if matched<=0:raise ValueError('The Pika adapter did not match its checkpoint. Verify the Pika model set in Settings.')
+            emit('stage',message=f'Applied Pika adapter to {matched} model weights')
     model=h3.MiniMaxH3SigmaShift.execute(model,video_shift,3.0)[0]
-    mods=load_mods(request['mods'],request['strengths'])
     first=last=None
     if request.get('first_frame'):
         first=load_image(request['first_frame'])
@@ -162,12 +172,18 @@ def generate(request,engine):
         last=load_image(request['last_frame'])
     emit('stage',message='Encoding prompt and reference conditioning',phase='encode')
     with torch.no_grad():
-        positive,latent=h3.MiniMaxH3ImageToVideo.execute(clip,vae,request['prompt'],request['width'],request['height'],request['frames'],first,last)
+        if preset=='pika_refs':
+            positive,latent=h3.MiniMaxH3ReferenceToVideo.execute(clip,request['prompt'],request['width'],request['height'],request['frames'],vae=vae,audio_vae=audio_vae)
+        else:
+            positive,latent=h3.MiniMaxH3ImageToVideo.execute(clip,vae,request['prompt'],request['width'],request['height'],request['frames'],first,last)
         if mods:
             positive=ref.MiniMaxH3RefModApply.execute(positive,mods,retention=request['retention'],curve_direction='constant',curve_shape='linear',curve_value=1.0,override=False,scramble_mode='shuffle',scramble_keep=1)[0]
         noise=sampling.RandomNoise.execute(request['seed'])[0]
         sampler=sampling.KSamplerSelect.execute(sampler_name)[0]
-        sigmas=sampling.BasicScheduler.execute(model,'simple',steps,1.0)[0]
+        if pika_profile.enabled(preset):
+            sigmas=sampling.ManualSigmas.execute(','.join(str(value) for value in pika_profile.SIGMAS))[0]
+        else:
+            sigmas=sampling.BasicScheduler.execute(model,'simple',steps,1.0)[0]
         guider=sampling.BasicGuider.execute(model,positive)[0]
         emit('stage',message=f'Generating video and audio: {PRESETS[preset][0]} ({steps} steps, {sampler_name})',phase='sample')
         latent=sampling.SamplerCustomAdvanced.execute(noise,guider,sampler,sigmas,latent)[1]
@@ -203,11 +219,16 @@ def generate(request,engine):
         emit('stage',message='Saving MP4',phase='save')
         output=video.CreateVideo.execute(images,24.0,audio,bit_depth=8,color_space='sRGB')[0]
         metadata={'prompt':request['prompt'],'seed':str(request['seed']),'preset':PRESETS[preset][0]}
+        if pika_profile.enabled(preset):
+            metadata.update(pika_adapter=model_name(adapter),sampler='lcm',sigmas=json.dumps(pika_profile.SIGMAS))
         if adapters:
             metadata['loras']=json.dumps([(Path(a['path']).name,a['strength']) for a in adapters])
         output.save_to(target,metadata=metadata)
     record=dict(model=profile['active'],checkpoint=checkpoint.name,checkpoint_bytes=checkpoint.stat().st_size,seed=str(request['seed']),
                 frames=int(images.shape[0]),width=int(images.shape[2]),height=int(images.shape[1]),fps=24)
+    if pika_profile.enabled(preset):
+        record.update(pika_adapter=model_name(adapter),sampler='lcm',sigmas=list(pika_profile.SIGMAS),
+                      torch_peak_reserved_mib=round(torch.cuda.max_memory_reserved()/1024**2))
     return {'video':target,'files':[target],'seed':request['seed'],'frames':request['frames'],'record':record,'reference_map':reference_map(mods),'details':f"Saved {record['frames']} frames at 24 fps. Seed {request['seed']}."}
 
 def load_image(path):

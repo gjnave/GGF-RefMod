@@ -6,6 +6,7 @@ import config as cfg
 import runtime
 import video_profile
 import video_loras
+import pika_profile
 import project_history
 import generation_eta
 import app_updates
@@ -45,7 +46,7 @@ def theme():
     return gr.themes.Base().set(**values)
 
 def model_table():
-    names={'base':'Video model','encoder':'Text encoder','video_vae':'Video reference encoder','audio_vae':'Audio reference encoder','turbo':'8-step Turbo','fast_preview':'Fast Preview (optional)','upscaler':'Latent upscaler','refiner':'Video refiner','dmd':'Refinement acceleration'}
+    names={'base':'Video model','encoder':'Text encoder','video_vae':'Video reference encoder','audio_vae':'Audio reference encoder','turbo':'8-step Turbo','fast_preview':'Fast Preview (optional)','upscaler':'Latent upscaler','refiner':'Video refiner','dmd':'Refinement acceleration','pika_fl2va':'Pika text / first-last adapter (optional)','pika_ref2va':'Pika references adapter (optional)','pika_base':'Pika references checkpoint (optional)'}
     rows=[]
     for m in displayed_models():
         cls='missing' if m['status']=='Missing or incomplete' else 'installed'
@@ -66,7 +67,7 @@ def displayed_models():
     return rows
 
 def library():
-    return sorted(str(p.relative_to(cfg.LIBRARY)).replace('\\','/') for p in cfg.LIBRARY.rglob('*.safetensors'))
+    return sorted((str(p.relative_to(cfg.LIBRARY)).replace('\\','/') for p in cfg.LIBRARY.rglob('*.safetensors')),key=lambda name:(name.casefold(),name))
 
 def metadata(name):
     from safetensors import safe_open
@@ -100,8 +101,7 @@ def reference_labels(names,strength=1):
 def reference_selection(names):
     available=library()
     selected=[name for name in names or [] if name in available]
-    choices=selected+[name for name in available if name not in selected]
-    return gr.update(choices=choices,value=selected,interactive=True)
+    return gr.update(choices=available,value=selected,interactive=True)
 
 
 def guarded(fn):
@@ -176,6 +176,8 @@ def create(token,media,audio,name,mode,concept,description,resolution,pool,laten
 @guarded
 def generate(token,prompt,selected,strength,retention,aspect,mp,duration,seed,preset,steps,upscale,upmp,refinesteps,first,last,batch,lora1='',weight1=1,lora2='',weight2=1,model='Use Settings'):
     if not prompt.strip():raise ValueError('Describe the scene, motion, and sound.')
+    chosen_preset=preset
+    preset=pika_profile.resolve(preset,selected)
     w,h=cfg.canvas(aspect,mp);uw,uh=cfg.canvas(aspect,upmp)
     frames=cfg.frames_for(duration)
     if upscale and uw*uh<=w*h:raise ValueError('Upscale megapixels must be larger than the working canvas.')
@@ -183,6 +185,8 @@ def generate(token,prompt,selected,strength,retention,aspect,mp,duration,seed,pr
     paths=[str(cfg.library_path(n)) for n in selected or []]
     strength=cfg.numeric(strength,0,1,'Reference strength');retention=cfg.numeric(retention,0,1,'Retention')
     profile=video_profile.settings()
+    if pika_profile.enabled(preset) and model=='Use Settings':
+        profile=dict(profile,active=video_profile.INT8)
     if model!='Use Settings':
         if model not in (video_profile.INT8,video_profile.HYBRID):raise ValueError('Choose a video model.')
         profile=dict(profile,active=model)
@@ -190,13 +194,15 @@ def generate(token,prompt,selected,strength,retention,aspect,mp,duration,seed,pr
     if hybrid:
         video_profile.linked_path(profile)
     adapter,nsteps,_,_=cfg.sampling_settings(preset,steps)
-    cfg.require_models(([] if hybrid else ['base'])+['encoder','video_vae','audio_vae']+([adapter] if adapter else [])+(['upscaler','dmd','refiner'] if upscale else []))
     req=dict(kind='generate',video_profile=profile,prompt=prompt,mods=paths,strengths=[strength]*len(paths),retention=retention,width=w,height=h,frames=frames,
         seed=cfg.seed_value(seed),preset=preset,steps=nsteps,upscale=bool(upscale),
         up_width=uw,up_height=uh,refine_steps=cfg.numeric(refinesteps,1,8,'Refinement steps',True),first_frame=first,last_frame=last,
         batch=cfg.numeric(batch,1,8,'Batch count',True))
     req['loras']=video_loras.selection([(lora1,weight1),(lora2,weight2)])
-    controls=dict(prompt=prompt,selected=selected or [],aspect=aspect,mp=mp,duration=duration,seed_input=cfg.seed_input(seed),preset=preset,custom_steps=steps,upscale=upscale,
+    pika_profile.validate(req)
+    base_key=pika_profile.model_key(preset)
+    cfg.require_models(([] if hybrid else [base_key])+['encoder','video_vae','audio_vae']+([adapter] if adapter else [])+(['upscaler','dmd','refiner'] if upscale else []))
+    controls=dict(prompt=prompt,selected=selected or [],aspect=aspect,mp=mp,duration=duration,seed_input=cfg.seed_input(seed),preset=chosen_preset,custom_steps=steps,upscale=upscale,
                   strength=strength,upmp=upmp,model=model,loras=[(lora1,weight1),(lora2,weight2)])
     req['form']=controls
     runtime.start(token,req,controls)
@@ -254,12 +260,18 @@ def maintenance(token,action,profile,remote):
     if remote:raise ValueError('Manage model files from the local PC interface.')
     if profile==cfg.FAST_DOWNLOAD:
         keys=['fast_preview']
+    elif profile==pika_profile.DEFAULT_DOWNLOAD:
+        keys=['base','pika_base','encoder','video_vae','audio_vae','pika_fl2va','pika_ref2va']
+    elif profile==pika_profile.DOWNLOAD:
+        keys=['base','encoder','video_vae','audio_vae','pika_fl2va']
+    elif profile==pika_profile.REFERENCE_DOWNLOAD:
+        keys=['pika_base','encoder','video_vae','audio_vae','pika_ref2va']
     elif profile=='RefMod creator — 5.8 GB':
         keys=['video_vae','audio_vae']
     else:
-        keys=[key for key in cfg.FILES if key!='fast_preview']
+        keys=[key for key in cfg.FILES if key not in ('fast_preview','pika_fl2va','pika_ref2va','pika_base')]
     video=video_profile.settings()
-    use_hybrid=video['active']==video_profile.HYBRID and 'base' in keys and action in ('download','verify')
+    use_hybrid=video['active']==video_profile.HYBRID and 'base' in keys and profile not in (pika_profile.DOWNLOAD,pika_profile.DEFAULT_DOWNLOAD) and action in ('download','verify')
     if use_hybrid:
         video_profile.linked_path(video)
         keys.remove('base')
@@ -408,23 +420,92 @@ def clip_gallery(token,previous,pinned=''):
         job,index,_,file=clip
         if Path(file).is_file():clips.append(clip)
     destination='bin' if cfg.read_settings()['recycle_videos'] is True else 'folder'
-    keys=[destination,[(job,index) for job,index,_,_ in clips]]
+    favorites=set(runtime.load_workspace(token).get('favorite_clips',[])) if token else set()
+    lineup=runtime.load_workspace(token).get('shot_lineup',[]) if token else []
+    keys=[destination,[(job,index,f'{job}-{index}' in favorites) for job,index,_,_ in clips],lineup]
     if keys==previous:return gr.skip(),gr.skip()
     buttons=[]
-    for position,(job,index,label,file) in enumerate(clips):
+    for job,index,label,file in clips:
         title=html.escape(f'{label} · Clip {index}',quote=True)
         src=html.escape(media_url(file),quote=True)
-        poster=html.escape(clip_poster(file,cfg.JOBS/job,index),quote=True) if position<20 else ''
+        poster=html.escape(clip_poster(file,cfg.JOBS/job,index),quote=True)
         picture=f'<img loading="lazy" src="{poster}" alt="">' if poster else '▶'
-        buttons.append(f'<span class="clip-item" hidden><button type="button" class="clip-tile" data-destination="{destination}" data-key="{job}-{index}" data-src="{src}" title="{title}" aria-label="Play {title}">{picture}</button><button type="button" class="clip-remove" aria-label="Delete {title}" title="Delete video">×</button></span>')
-    return ''.join(buttons),keys
+        favorite=f'{job}-{index}' in favorites
+        favorite_label=('Remove favorite: ' if favorite else 'Favorite: ')+title
+        key=f'{job}-{index}';position=lineup.index(key)+1 if key in lineup else 0
+        buttons.append(f'<span class="clip-item" hidden><button type="button" class="clip-tile" data-destination="{destination}" data-key="{key}" data-lineup="{position}" data-favorite="{str(favorite).lower()}" data-src="{src}" title="{title}" aria-label="Play {title}">{picture}</button><button type="button" class="clip-favorite" aria-label="{favorite_label}" aria-pressed="{str(favorite).lower()}" title="{favorite_label}">{"★" if favorite else "☆"}</button><button type="button" class="clip-remove" aria-label="Delete {title}" title="Delete video">×</button><label class="clip-select" title="Add or remove shot from lineup"><input type="checkbox" aria-label="Include {title} in lineup" {"checked" if position else ""}><span>{position or "Select"}</span></label></span>')
+    return '<div class="clip-grid">'+''.join(buttons)+'</div><p class="clip-empty" hidden>No favorite videos yet. Use ☆ on an output to add it here.</p>',keys
 
-def delete_gallery_clip(token,event:gr.EventData):
+def gallery_action(token,event:gr.EventData):
     try:
-        gr.Info(runtime.delete_clip(token,event.key,getattr(event,'destination',None)))
+        if getattr(event,'action',None)=='favorite':
+            runtime.favorite_clip(token,event.key,getattr(event,'favorite',None))
+        elif getattr(event,'action',None) in ('lineup-add','lineup-remove'):
+            runtime.edit_lineup(token,event.action.removeprefix('lineup-'),event.key)
+        else:
+            gr.Info(runtime.delete_clip(token,event.key,getattr(event,'destination',None)))
     except (OSError,ValueError) as exc:
-        gr.Warning(f'Could not delete the clip: {exc}')
+        gr.Warning(f'Could not update the clip: {exc}')
     return clip_gallery(token,None,getattr(event,'pinned',''))
+
+def lineup_view(token,previous):
+    if not token:return gr.skip(),gr.skip()
+    saved=runtime.load_workspace(token)
+    keys=saved.get('shot_lineup',[])
+    clips={f'{job}-{index}':(job,index,label,Path(file)) for job,index,label,file in runtime.workspace_clips(token)}
+    available={key for key,(_,_,_,file) in clips.items() if file.is_file()}
+    marker=[keys,sorted(available),bool(saved.get('latest_stitch'))]
+    if marker==previous:return gr.skip(),gr.skip()
+    rows=[];missing=False
+    for position,key in enumerate(keys):
+        clip=clips.get(key) if key in available else None
+        title=html.escape(f'{clip[2]} · Clip {clip[1]}' if clip else 'Unavailable shot')
+        poster=clip_poster(clip[3],cfg.JOBS/clip[0],clip[1]) if clip else ''
+        picture=f'<img src="{html.escape(poster,quote=True)}" alt="">' if poster else ''
+        missing=missing or not clip
+        rows.append(f'<li data-key="{html.escape(key,quote=True)}">{picture}<span>{position+1}. {title}</span><div class="lineup-row-actions"><button type="button" data-action="move" data-direction="-1" aria-label="Move shot {position+1} up" {"disabled" if position==0 else ""}>↑</button><button type="button" data-action="move" data-direction="1" aria-label="Move shot {position+1} down" {"disabled" if position==len(keys)-1 else ""}>↓</button><button type="button" data-action="remove" aria-label="Remove shot {position+1} from lineup">Remove</button></div></li>')
+    content='<ol>'+''.join(rows)+'</ol>' if rows else '<p>Select shots using the checkboxes on their thumbnails, or add the active video.</p>'
+    if missing:content+='<p>Remove unavailable shots before playing or stitching.</p>'
+    content+=f'<div class="lineup-actions"><button type="button" data-play-lineup {"disabled" if not keys or missing else ""}>Play lineup</button><button type="button" data-stop-lineup disabled>Stop lineup</button><button type="button" data-action="clear" {"disabled" if not keys and not saved.get("latest_stitch") else ""}>Clear lineup &amp; preview</button><span class="lineup-play-status" aria-live="polite"></span></div>'
+    return content,marker
+
+
+def lineup_action(token,event:gr.EventData):
+    preview=gr.skip()
+    try:
+        runtime.edit_lineup(token,event.action,getattr(event,'key',None),getattr(event,'direction',None))
+        if event.action=='clear':preview=''
+    except (ValueError,OSError) as exc:gr.Warning(str(exc))
+    return *lineup_view(token,None),preview
+
+
+def clear_stitched_preview(token):
+    runtime.edit_lineup(token,'dismiss-stitch')
+    return '',*lineup_view(token,None)
+
+
+def stitched_result(token):
+    if not token:return ''
+    saved=runtime.load_workspace(token).get('latest_stitch')
+    if not saved:return ''
+    path=Path(saved['path']);folder=(cfg.OUTPUTS/'Stitched videos').resolve()
+    if path.resolve().parent!=folder or not path.is_file():return ''
+    address=html.escape(media_url(path),quote=True)
+    return f'<p>{saved["shots"]} shots · {saved["seconds"]:.1f} seconds</p><video controls playsinline preload="metadata" src="{address}" aria-label="Stitched lineup preview"></video><p><a href="{address}" download="{html.escape(path.name,quote=True)}">Download stitched MP4</a></p><button type="button" class="clear-stitched">Clear stitched preview</button>'
+
+
+def stitch_lineup(token,progress=gr.Progress()):
+    import av,shot_lineup
+    try:
+        keys,sources=runtime.lineup_sources(token)
+        path,details=shot_lineup.stitch(sources,cfg.OUTPUTS/'Stitched videos',keys,lambda f,msg:progress(f,desc=msg))
+        with runtime.LOCK:
+            saved=runtime.load_workspace(token)
+            saved['latest_stitch']=dict(path=str(path),shots=len(keys),seconds=details['duration_seconds'])
+            runtime.save_workspace(token,saved)
+        return stitched_result(token)
+    except (OSError,ValueError,av.error.FFmpegError) as exc:raise gr.Error(f'Could not stitch the lineup: {exc}') from exc
+
 
 def convert_to_gif(token,key):
     import gif_export
@@ -490,6 +571,13 @@ def poll(token,last_seen):
 
 def restore(token):
     saved=runtime.load_workspace(token);c=saved.get('controls',{})
+    if not saved.get('pika_default_0111'):
+        if not saved.get('reused_generation'):
+            saved['controls_before_pika_default']=dict(c)
+            c=dict(c,model='Use Settings',preset=c.get('preset') if pika_profile.enabled(c.get('preset')) else cfg.DEFAULT_PRESET)
+            saved['controls']=c
+        saved['pika_default_0111']=True
+        runtime.save_workspace(token,saved)
     request={}
     job=saved.get('job','')
     if job and Path(job).name==job:
@@ -503,7 +591,7 @@ def restore(token):
     preset=cfg.saved_preset(c)
     # Older workspaces stored the generated number, so only restore an explicit input.
     return (token,c.get('prompt',''),reference_selection(c.get('selected',[])),c.get('aspect','Portrait 9:16'),
-            c.get('mp',.5),c.get('duration',3),c.get('seed_input',''),preset,c.get('upscale',False),media or None,creator.get('audio'),creator.get('name',''),
+            c.get('mp',.6),c.get('duration',5),c.get('seed_input',''),preset,c.get('upscale',False),media or None,creator.get('audio'),creator.get('name',''),
             creator.get('mode','Full Reference'),creator.get('concept','identity'),creator.get('description',''),frames.get('first_frame'),frames.get('last_frame'),
             menus[0],slots[0][1],menus[1],slots[1][1],gr.update(value=c.get('custom_steps',20),visible=preset=='custom'),
             c.get('model','Use Settings'),c.get('strength',1),frames.get('retention',1),c.get('upmp',1.2),frames.get('refine_steps',2),frames.get('batch',1))
@@ -587,7 +675,7 @@ def build_ui(remote=False):
                     with gr.Row():
                         resolution=gr.Slider(256,2048,value=1024,step=256,label='Reference resolution')
                         max_frames=gr.Number(value=450,precision=0,label='Maximum input video frames')
-                        latent_frames=gr.Number(value=16,precision=0,label='Latent frame limit')
+                        latent_frames=gr.Number(value=56,precision=0,label='Video temporal limit',info='Full Reference: sampled source frames; use 22 or more to retain motion. Compressed Reference: maximum latent frames. Sampling covers the clip.')
                     with gr.Row():
                         pool=gr.Slider(4,64,value=16,step=2,label='Compressed pooling grid',visible=False)
                         refinement=gr.Slider(0,2000,value=500,step=50,label='Compressed refinement steps',visible=False)
@@ -598,9 +686,9 @@ def build_ui(remote=False):
                         layout=gr.Radio([('Separate files','separate_files'),('One bundle','bundle')],value='separate_files',label='Save format')
             with gr.Tab('Generate Video',id='generate'):
                 gr.Markdown('**Select saved RefMods and describe the scene, movement, dialogue, and sound.** Use the reference labels below in your prompt. Ctrl+Enter starts the visible Create or Generate action.')
-                with gr.Row():
-                    with gr.Column():
-                        selected=gr.Dropdown(library(),multiselect=True,max_choices=8,label='RefMod library (choose up to 8)',info='Double-click a selected label to replace it. Choosing another selected RefMod swaps their positions.',elem_id='refmod-library',value=[])
+                with gr.Row(elem_id='generation-layout'):
+                    with gr.Column(elem_id='generation-inputs'):
+                        selected=gr.Dropdown(library(),multiselect=True,max_choices=8,label='RefMod library (choose up to 8)',info='Use ↑ / ↓ on each selected label to change reference order. Double-click its name to replace it or swap with another selected RefMod.',elem_id='refmod-library',value=[])
                         refmod_sort=gr.HTML('',elem_id='refmod-order',
                             js_on_load=(cfg.APP/'assets/refmod-order.js').read_text(encoding='utf-8'))
                         replace_target=gr.State('')
@@ -613,8 +701,9 @@ def build_ui(remote=False):
                         prompt=gr.Textbox(label='Scene and sound',elem_id='scene-and-sound',lines=8,placeholder='The character from <Picture 1> walks through a rainy street. Gentle camera tracking. Footsteps and distant traffic.')
                         with gr.Row():
                             aspect=gr.Dropdown(['Portrait 9:16','Landscape 16:9','Square 1:1'],value='Portrait 9:16',filterable=False,label='Aspect ratio')
-                            duration=gr.Number(value=3,label='Duration in seconds')
-                        preset=gr.Radio([(v[0],k) for k,v in cfg.PRESETS.items()],value='turbo',label='Generation preset',info='Use Fast Preview for a quicker draft. Its optional adapter is available in Settings.')
+                        duration=gr.Number(value=5,label='Duration in seconds')
+                        preset=gr.Radio([(v[0],k) for k,v in cfg.PRESETS.items()],value=cfg.DEFAULT_PRESET,label='Generation preset',info='Pika automatic is the default. Use Turbo or Fast Preview for video/audio RefMods.')
+                        pika_notice=gr.Markdown('',visible=False,elem_id='pika-note')
                         with gr.Accordion('LoRAs (optional)',open=False):
                             gr.Markdown('Choose MiniMax H3 video LoRAs. Set strength to 0 to skip an adapter. Select Custom steps if you supply your own speed LoRA.')
                             slots=[]
@@ -631,19 +720,27 @@ def build_ui(remote=False):
                                 lora_message=gr.Textbox(label='LoRA link status',interactive=False)
                         go=gr.Button('Generate Video',variant='primary',elem_classes='main-action')
                         stop2=gr.Button('Stop current job')
-                    with gr.Column():
-                        count_options=''.join(f'<option value="{i}"{" selected" if i==20 else ""}>{i}</option>' for i in range(1,21))
+                    with gr.Column(elem_id='generation-output'):
+                        count_options=''.join(f'<option value="{i}"{" selected" if i==20 else ""}>{i}</option>' for i in range(1,21))+'<option value="all">All</option>'
                         generation_bar=gr.HTML('',visible=False,elem_id='generation-progress')
                         progress_marker=gr.State('')
                         gr.HTML('<video controls playsinline preload="metadata" aria-label="Generated video"></video><div class="clip-caption" aria-live="polite">Completed videos appear here.</div>'
-                                f'<div class="clip-tools"><label><input type="checkbox" class="loop-playback"> Loop playback</label><label><input type="checkbox" class="continuous-playback"> Continuous play</label><label>Thumbnails shown <select aria-label="Thumbnails shown">{count_options}</select></label><button type="button" class="delete-current" hidden>× Delete current video</button></div>',elem_id='clip-player')
+                                f'<div class="clip-tools"><label><input type="checkbox" class="loop-playback"> Loop playback</label><label><input type="checkbox" class="continuous-playback"> Continuous play</label><label>Thumbnails shown <select aria-label="Thumbnails shown">{count_options}</select></label><label>Show <select aria-label="Filter outputs"><option value="all">All outputs</option><option value="favorites">Favorites</option></select></label><button type="button" class="favorite-current" aria-pressed="false" hidden>☆ Favorite</button><button type="button" class="lineup-current" hidden>Add to lineup</button><button type="button" class="delete-current" hidden>× Delete current video</button></div>',elem_id='clip-player')
                         with gr.Row():
                             reuse_prompt=gr.Button('Reuse prompt & settings',size='sm',elem_id='reuse-active-prompt')
                             gif_button=gr.Button('Convert to GIF',size='sm',elem_id='convert-to-gif')
                         gif_result=gr.HTML('')
                         gallery=gr.HTML('',elem_id='clip-gallery',js_on_load=(cfg.APP/'assets/clip-gallery.js').read_text(encoding='utf-8'))
+                        gr.HTML('<div class="clip-navigation-bar"><button type="button" class="clips-prev" aria-label="Previous thumbnail page">Previous</button><span class="clip-page-status" aria-live="polite"></span><button type="button" class="clips-next" aria-label="Next thumbnail page">Next</button></div>',elem_id='clip-navigation')
                         gallery_keys=gr.State(None)
                         pinned_key=gr.Textbox(visible=False)
+                        with gr.Group(elem_id='shot-lineup-box'):
+                            gr.Markdown('### Shot lineup\nSelect shots, arrange them with the arrows, then play or stitch them in that order.')
+                            lineup=gr.HTML('',elem_id='shot-lineup',js_on_load=(cfg.APP/'assets/shot-lineup.js').read_text(encoding='utf-8'))
+                            lineup_marker=gr.State(None)
+                            stitch_button=gr.Button('Stitch lineup into MP4',size='sm')
+                            gr.Markdown('Stitching keeps the audio, uses the first shot’s canvas at 24 fps, and fits other shots without cropping.')
+                            stitched=gr.HTML('',elem_id='stitched-output',js_on_load="""element.addEventListener('click',event=>{if(event.target.closest('.clear-stitched')){element.querySelector('video')?.pause();trigger('click',{});}});""")
                         with gr.Group(elem_id='queue-box'):
                             gr.Markdown('### Generation queue')
                             queue_panel=gr.HTML('<p>Queue is empty.</p>',elem_id='generation-queue',
@@ -701,7 +798,8 @@ def build_ui(remote=False):
                 models=gr.HTML(model_table())
                 model_refresh=gr.Button('Refresh model status')
                 with gr.Group(visible=not remote):
-                    profile=gr.Radio(['RefMod creator — 5.8 GB','Creator + video + upscale — 47.6 GB',cfg.FAST_DOWNLOAD],value='RefMod creator — 5.8 GB',label='Models to manage')
+                    profile=gr.Radio([pika_profile.DEFAULT_DOWNLOAD,'RefMod creator — 5.8 GB','Creator + video + upscale — 47.6 GB',cfg.FAST_DOWNLOAD,pika_profile.DOWNLOAD,pika_profile.REFERENCE_DOWNLOAD],value=pika_profile.DEFAULT_DOWNLOAD,label='Models to manage')
+                    gr.Markdown('Pika sets reuse installed encoder and VAE files. The text / first-last option adds a 1.96 GB adapter to native INT8 H3. The references set adds its own 20.97 GB checkpoint and 1.96 GB adapter. Missing shared files are downloaded too.')
                     with gr.Row():
                         download=gr.Button('Download missing models',variant='primary')
                         reconnect_btn=gr.Button('Reconnect and resume',interactive=False)
@@ -733,7 +831,18 @@ def build_ui(remote=False):
         log=gr.File(label='Job log',interactive=False)
         gr.HTML('<footer class="ggf-footer">Powered by MiniMax H3 · RefMod by Luisacaotica · Comfy inference core</footer>')
         media.change(lambda items:previews.render(items,media_view),media,media_view,trigger_mode='always_last',show_progress='minimal')
-        preset.change(lambda name:gr.update(visible=name=='custom'),preset,steps,queue=False,show_progress='hidden')
+        def change_preset(name,seconds,references):
+            pika=pika_profile.enabled(name)
+            reference=name=='pika_refs' or (name=='pika_auto' and bool(references))
+            adapter_updates=[gr.update(value='',interactive=False) if pika else gr.update(interactive=True) for _ in (0,1)]
+            weight_updates=[gr.update(interactive=not pika) for _ in (0,1)]
+            frame_updates=[gr.update(value=None,interactive=False) if reference else gr.update(interactive=True) for _ in (0,1)]
+            selected_update=gr.update(value=[],interactive=False) if name=='pika' else gr.update(interactive=True)
+            upscale_update=gr.update(value=False,interactive=False) if pika else gr.update(interactive=True)
+            return [gr.update(visible=name=='custom'),gr.update(value=pika_profile.note(name),visible=pika),upscale_update,
+                    adapter_updates[0],weight_updates[0],adapter_updates[1],weight_updates[1],*frame_updates,selected_update,
+                    gr.update(value=max(5,min(15,float(seconds or 5))),minimum=5,maximum=15) if pika else gr.update(minimum=None,maximum=None)]
+        gr.on([preset.change,selected.input],change_preset,[preset,duration,selected],[steps,pika_notice,upscale,*slots,first,last,selected,duration],queue=False,show_progress='hidden')
         upscale.change(lambda enabled:gr.update(visible=enabled),upscale,upscale_options,queue=False,show_progress='hidden')
         mode.change(lambda choice:[gr.update(visible=choice=='Compressed Reference') for _ in range(2)],mode,[pool,refinement],queue=False,show_progress='hidden')
         audio.change(lambda item:previews.render([item] if item else [],audio_view,True),audio,audio_view,trigger_mode='always_last',show_progress='minimal')
@@ -781,13 +890,19 @@ def build_ui(remote=False):
             recycle.input(lambda enabled:cfg.update_settings(recycle_videos=enabled),recycle,None,queue=False)
         free.click(guarded(runtime.release),None,free_status,queue=False)
         end.click(stop_server,confirm,end_status,queue=False)
-        ui.load(restore,browser_token,[token,prompt,selected,aspect,mp,duration,seed,preset,upscale,media,audio,name,mode,concept,description,first,last,*slots,steps,run_model,strength,retention,upmp,refinesteps,batch],js=RESTORE_JS,queue=False)
+        restored=ui.load(restore,browser_token,[token,prompt,selected,aspect,mp,duration,seed,preset,upscale,media,audio,name,mode,concept,description,first,last,*slots,steps,run_model,strength,retention,upmp,refinesteps,batch],js=RESTORE_JS,queue=False)
+        restored.success(stitched_result,token,stitched,queue=False)
+        restored.success(change_preset,[preset,duration,selected],[steps,pika_notice,upscale,*slots,first,last,selected,duration],queue=False,show_progress='hidden')
         timer=gr.Timer(1)
         timer.tick(generation_progress,[token,progress_marker],[generation_bar,progress_marker],queue=False,show_progress='hidden')
         if not remote:
             timer.tick(link_progress,[token,link_job],[link_status,link_job,active_model,models],queue=False,show_progress='hidden')
         timer.tick(poll,[token,last_seen],[activity,make,go,downloads,details,log,last_seen,models,transfer_info,reconnect_btn],queue=False)
-        gallery.click(delete_gallery_clip,token,[gallery,gallery_keys],queue=False,show_progress='hidden')
+        gallery.click(gallery_action,token,[gallery,gallery_keys],queue=False,show_progress='hidden')
+        lineup.click(lineup_action,token,[lineup,lineup_marker,stitched],queue=False,show_progress='hidden')
+        stitched.click(clear_stitched_preview,token,[stitched,lineup,lineup_marker],queue=False,show_progress='hidden')
+        timer.tick(lineup_view,[token,lineup_marker],[lineup,lineup_marker],queue=False,show_progress='hidden')
+        stitch_button.click(stitch_lineup,token,stitched,concurrency_id='shot-stitch',concurrency_limit=1)
         gif_button.click(convert_to_gif,[token,pinned_key],gif_result,js="(t,k)=>[t,document.querySelector('#clip-player video')?.dataset.key||'']",concurrency_limit=1,show_progress='full')
         timer.tick(clip_gallery,[token,gallery_keys,pinned_key],[gallery,gallery_keys],js="(t,k,p)=>[t,k,sessionStorage.getItem('minimax-refmod-gallery:'+localStorage.getItem('minimax-refmod-workspace'))||'']",queue=False,show_progress='hidden')
         timer.tick(queue_view,[token,queue_marker],[queue_panel,queue_marker],queue=False)
