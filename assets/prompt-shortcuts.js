@@ -9,7 +9,7 @@ element.addEventListener("click", (event) => {
     const right = prompt.value.slice(end);
     const prefix = left && !/[\s([{]$/.test(left) ? " " : "";
     const suffix = !right || /^[\p{L}\p{N}<]/u.test(right) ? " " : "";
-    const phrase = button.dataset.ref.startsWith("Audio ")
+    const phrase = button.dataset.kind === "audio" || button.dataset.ref.startsWith("Audio ")
         ? "Using the exact voice, tone, and vocal characteristics from <" + button.dataset.ref + ">"
         : "The Character from <" + button.dataset.ref + ">";
     prompt.setRangeText(prefix + phrase + suffix, start, end, "end");

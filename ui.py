@@ -93,7 +93,9 @@ def reference_labels(names,strength=1):
                     label=f'{labels[kind]} {counts[kind]}'
                     ref_name=ref.get('name',name)
                     rows.append(f"<{label}> = {ref_name}")
-                    buttons.append(f'<button type="button" data-ref="{label}" title="{html.escape(str(ref_name),quote=True)}">{label}</button>')
+                    prompt_name=Path(str(ref_name)).name.removesuffix('.safetensors') if m.get('kind')=='bundle' else Path(name).stem
+                    escaped_name=html.escape(prompt_name,quote=True)
+                    buttons.append(f'<button type="button" data-ref="{escaped_name}" data-kind="{kind}" title="{html.escape(label+": "+prompt_name,quote=True)}">{escaped_name}</button>')
         except Exception as e:rows.append(str(e))
     shortcuts='<span>Insert reference</span> '+ ' '.join(buttons) if buttons else ''
     return '\n'.join(rows) or 'Select RefMods to see their prompt labels.',gr.update(value=shortcuts,visible=bool(buttons))

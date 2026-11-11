@@ -13,7 +13,7 @@ Use Windows x64 with an NVIDIA GPU and a driver compatible with CUDA 13.0. Insta
 1. Clone this release from GitHub and enter its folder.
 
    ```bat
-   git clone --branch v0.11.2 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
+   git clone --branch v0.11.3 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
    cd Minimax-Refmod
    ```
 
@@ -51,7 +51,7 @@ If an update changes Python dependencies, the updater builds a separate environm
 
 ## Models
 
-### Pika H3 Flex (default in 0.11.2)
+### Pika H3 Flex (default in 0.11.3)
 
 The default generation preset is **Pika Flex · automatic**. It selects the Pika image-RefMod task when references are selected, or Pika text / first-last otherwise. Pika uses its matching native INT8 model rather than GrizzlyMax INT4. On the first launch of this update, old generation defaults migrate to Pika; the previous controls are retained in the private workspace state. Later explicit preset choices and project reuse remain available.
 
@@ -65,7 +65,7 @@ Release smoke test on the RTX 4090, using the same saved image RefMod, prompt, s
 
 Pika’s published duration range is 5–15 seconds. This app also allows shorter positive durations, snapped upward to the model’s `17k+5` frame grid at 24 fps. A three-second request produces 73 frames (about 3.04 seconds). Changing presets or references preserves the duration you entered. The Gradio field no longer applies a five-second minimum; backend validation still requires a positive duration and limits Pika to 15 seconds. Start at 0.6 MP / 5 seconds. The initial real-GPU tests on an RTX 4090 produced 124-frame 1024×576 MP4s with native 32 kHz audio in both modes. Text mode took 100.95 seconds with 20,642 MiB peak PyTorch reserved memory; one saved-image RefMod took 81.61 seconds with 20,664 MiB. These are measurements of this configuration, not whole-device VRAM minima or a benchmark against Turbo. 12/16 GB support has not been validated here. VSA and Semantic Bridge are not part of these presets.
 
-The 0.11.2 release includes Pika, favorites, thumbnail pagination, shot lineups, MP4 stitching and app updates. The member ZIP contains only the Windows entry points and notices; INSTALL.bat fetches pinned source and models remain managed inside the app.
+The 0.11.3 release includes Pika, favorites, thumbnail pagination, shot lineups, MP4 stitching and app updates. The member ZIP contains only the Windows entry points and notices; INSTALL.bat fetches pinned source and models remain managed inside the app.
 
 References: [Pika Labs model card](https://huggingface.co/Pika-Labs/Pika-H3-Flex), [native Comfy tutorial](https://docs.comfy.org/tutorials/video/pika/pika-h3-flex), and [the supplied community workflow](https://huggingface.co/Thelocallab/Pika-H3-Flex-ComfyUI-Workflow).
 
@@ -100,7 +100,7 @@ Under **Generation preset**, **Pika Flex · automatic** is the default. For vide
 
 Open **LoRAs (optional)** to select up to two additional MiniMax H3 video adapters and set their strengths independently. Use **Browse for LoRA** and **Link LoRA** on the PC to reuse a local `.safetensors` file in place. Files already under `models/loras` appear with **Refresh LoRA list**. Choose **No LoRA** to clear a slot. The selected adapters affect both generation and optional refinement. A strength of zero skips the adapter. Choose **Custom steps** when using your own speed LoRA.
 
-Choose up to eight RefMods. Beside **Scene and sound**, click a numbered reference shortcut to insert a phrase such as `The Character from <Picture 2>` at the cursor. The links follow your selection order and number pictures, videos, and audio separately. Include motion, camera direction, dialogue, SFX, and music. Optional first/last images provide keyframes. A shared strength and retention control adjust the chosen references.
+Choose up to eight RefMods. Beside **Scene and sound**, click a RefMod-name shortcut to insert a phrase such as `The Character from <character_alex_visual>` at the cursor. The shortcut uses the selected file name without `.safetensors`; bundle members use their saved reference names. Audio shortcuts insert `Using the exact voice, tone, and vocal characteristics from <voice_refmod_name>`. The numbered reference map remains visible to show the selection order. Include motion, camera direction, dialogue, SFX, and music. Optional first/last images provide keyframes. A shared strength and retention control adjust the chosen references.
 
 Click **Generate Video** for the first submission. While it runs, change the prompt or settings and click **Add to queue**. Each submission saves its inputs and seed, and the app runs them in order on one GPU. Every finished clip appears in the thumbnail strip, newest first, including the clip in the main player. Click a thumbnail to select it. Each newly finished clip becomes the active video in the main player. All thumbnails stay in the strip, and you can click any one to view it.
 
