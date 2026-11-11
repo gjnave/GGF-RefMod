@@ -13,7 +13,7 @@ Use Windows x64 with an NVIDIA GPU and a driver compatible with CUDA 13.0. Insta
 1. Clone this release from GitHub and enter its folder.
 
    ```bat
-   git clone --branch v0.11.1 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
+   git clone --branch v0.11.2 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
    cd Minimax-Refmod
    ```
 
@@ -51,7 +51,7 @@ If an update changes Python dependencies, the updater builds a separate environm
 
 ## Models
 
-### Pika H3 Flex (default in 0.11.1)
+### Pika H3 Flex (default in 0.11.2)
 
 The default generation preset is **Pika Flex · automatic**. It selects the Pika image-RefMod task when references are selected, or Pika text / first-last otherwise. Pika uses its matching native INT8 model rather than GrizzlyMax INT4. On the first launch of this update, old generation defaults migrate to Pika; the previous controls are retained in the private workspace state. Later explicit preset choices and project reuse remain available.
 
@@ -63,9 +63,9 @@ Text / first-last supports a prompt and optional endpoint images. **Pika RefMods
 
 Release smoke test on the RTX 4090, using the same saved image RefMod, prompt, seed and 124-frame 1024×576 output: Pika generation took 88.84 seconds versus 99.45 seconds for GrizzlyMax INT4 Turbo. Including separate worker startup and exit, the measured runs were 93.53 and 101.80 seconds (about 8% less elapsed time). This is one matched smoke comparison, not a general hardware benchmark.
 
-Pika duration is 5–15 seconds, snapped upward to the model's `17k+5` frame grid at 24 fps. Start at 0.6 MP / 5 seconds. The initial real-GPU tests on an RTX 4090 produced 124-frame 1024×576 MP4s with native 32 kHz audio in both modes. Text mode took 100.95 seconds with 20,642 MiB peak PyTorch reserved memory; one saved-image RefMod took 81.61 seconds with 20,664 MiB. These are measurements of this configuration, not whole-device VRAM minima or a benchmark against Turbo. 12/16 GB support has not been validated here. VSA and Semantic Bridge are not part of these presets.
+Pika’s published duration range is 5–15 seconds. This app also allows shorter positive durations, snapped upward to the model’s `17k+5` frame grid at 24 fps. A three-second request produces 73 frames (about 3.04 seconds). Changing presets or references preserves the duration you entered. The Gradio field no longer applies a five-second minimum; backend validation still requires a positive duration and limits Pika to 15 seconds. Start at 0.6 MP / 5 seconds. The initial real-GPU tests on an RTX 4090 produced 124-frame 1024×576 MP4s with native 32 kHz audio in both modes. Text mode took 100.95 seconds with 20,642 MiB peak PyTorch reserved memory; one saved-image RefMod took 81.61 seconds with 20,664 MiB. These are measurements of this configuration, not whole-device VRAM minima or a benchmark against Turbo. 12/16 GB support has not been validated here. VSA and Semantic Bridge are not part of these presets.
 
-The 0.11.1 release includes Pika, favorites, thumbnail pagination, shot lineups, MP4 stitching and app updates. The member ZIP contains only the Windows entry points and notices; INSTALL.bat fetches pinned source and models remain managed inside the app.
+The 0.11.2 release includes Pika, favorites, thumbnail pagination, shot lineups, MP4 stitching and app updates. The member ZIP contains only the Windows entry points and notices; INSTALL.bat fetches pinned source and models remain managed inside the app.
 
 References: [Pika Labs model card](https://huggingface.co/Pika-Labs/Pika-H3-Flex), [native Comfy tutorial](https://docs.comfy.org/tutorials/video/pika/pika-h3-flex), and [the supplied community workflow](https://huggingface.co/Thelocallab/Pika-H3-Flex-ComfyUI-Workflow).
 

@@ -28,7 +28,8 @@ def note(preset):
         'current upscale/refine pass are disabled. Pika selects its matching native '
         'INT8 checkpoint for this generation; your default model in Settings stays as saved. '
         'Start at 0.6 MP and 5 seconds on a 24 GB NVIDIA GPU. Smaller cards and '
-        'longer clips need separate testing. '
+        'longer clips need separate testing. Shorter clips are allowed here; Pika’s '
+        'published duration range is 5–15 seconds. '
     )
     if preset == 'pika_auto':
         return common + (
@@ -61,8 +62,8 @@ def validate(request):
     profile = request.get('video_profile', {})
     if profile.get('active') != 'MiniMax H3 INT8':
         raise ValueError('Pika uses its matching native INT8 checkpoint. Choose Use Settings or MiniMax H3 INT8 for this generation.')
-    if not 124 <= request.get('frames', 0) <= 362:
-        raise ValueError('Choose 5 to 15 seconds for Pika Flex. The app rounds up to the supported frame grid.')
+    if not 5 <= request.get('frames', 0) <= 362:
+        raise ValueError('Choose a positive duration up to 15 seconds for Pika Flex. The app rounds up to the supported frame grid.')
     if preset == 'pika' and request.get('mods'):
         raise ValueError('Choose Pika References to use saved RefMods, or clear the RefMod selection.')
     if preset == 'pika_refs':

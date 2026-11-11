@@ -841,7 +841,7 @@ def build_ui(remote=False):
             upscale_update=gr.update(value=False,interactive=False) if pika else gr.update(interactive=True)
             return [gr.update(visible=name=='custom'),gr.update(value=pika_profile.note(name),visible=pika),upscale_update,
                     adapter_updates[0],weight_updates[0],adapter_updates[1],weight_updates[1],*frame_updates,selected_update,
-                    gr.update(value=max(5,min(15,float(seconds or 5))),minimum=5,maximum=15) if pika else gr.update(minimum=None,maximum=None)]
+                    gr.update(minimum=None,maximum=None)]
         gr.on([preset.change,selected.input],change_preset,[preset,duration,selected],[steps,pika_notice,upscale,*slots,first,last,selected,duration],queue=False,show_progress='hidden')
         upscale.change(lambda enabled:gr.update(visible=enabled),upscale,upscale_options,queue=False,show_progress='hidden')
         mode.change(lambda choice:[gr.update(visible=choice=='Compressed Reference') for _ in range(2)],mode,[pool,refinement],queue=False,show_progress='hidden')
