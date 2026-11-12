@@ -197,6 +197,27 @@ def clip_project(token,key):
         elapsed=(state['finished']-state['started']) if state.get('finished') and state.get('started') else None
         return source,int(number),request,record,elapsed
 
+def delete_refmods(names):
+    """Recycle only selected library files, preserving references needed by live jobs."""
+    from config import library_path
+    from recycle_video import recycle_video as recycle_file
+    with LOCK:
+        names=list(dict.fromkeys(names or []))
+        if not names:raise ValueError('Choose at least one RefMod to delete.')
+        paths={name:library_path(name) for name in names}
+        needed=set()
+        for state in ([ACTIVE] if ACTIVE else [])+list(PENDING):
+            request=json.loads((Path(state['job_dir'])/'request.json').read_text(encoding='utf-8'))
+            needed.update(Path(path).resolve() for path in request.get('mods',[]))
+        blocked=[name for name,path in paths.items() if path in needed]
+        if blocked:raise ValueError('These RefMods are used by a running or queued generation. Finish it or remove it from the queue first: '+', '.join(blocked))
+        removed=[];errors=[]
+        for name,path in paths.items():
+            try:recycle_file(path);removed.append(name)
+            except OSError as exc:errors.append(name+': '+str(exc))
+        return removed,errors
+
+
 def edit_lineup(token,action,key=None,direction=None):
     with LOCK:
         saved=load_workspace(token)

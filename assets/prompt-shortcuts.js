@@ -11,7 +11,7 @@ element.addEventListener("click", (event) => {
     const suffix = !right || /^[\p{L}\p{N}<]/u.test(right) ? " " : "";
     const phrase = button.dataset.kind === "audio" || button.dataset.ref.startsWith("Audio ")
         ? "Using the exact voice, tone, and vocal characteristics from <" + button.dataset.ref + ">"
-        : "The Character from <" + button.dataset.ref + ">";
+        : "<" + button.dataset.ref + ">";
     prompt.setRangeText(prefix + phrase + suffix, start, end, "end");
     prompt.dispatchEvent(new Event("input", { bubbles: true }));
     prompt.focus();

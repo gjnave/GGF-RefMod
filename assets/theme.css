@@ -249,6 +249,10 @@ body, .gradio-container {
     cursor: pointer;
 }
 #prompt-shortcuts button[data-ref]:focus-visible { outline: 2px solid #ffda83; }
+#refmod-manager .token {max-width:100%;min-width:0;}
+#refmod-manager .token>span {white-space:normal;overflow-wrap:anywhere;min-width:0;}
+#refmod-manager-intro,#refmod-manager-status,#refmod-manager-intro .prose,#refmod-manager-status .prose {background:#111c2f!important;color:#e8eef9!important;}
+#refmod-manager-intro :is(h3,p),#refmod-manager-status p {color:#e8eef9!important;}
 #clip-player video { width:100%; height:clamp(260px,44vw,580px); display:block; object-fit:contain; background:#060b13; border-radius:8px; }
 #clip-player .clip-caption { padding:6px 2px; overflow-wrap:anywhere; }
 #clip-gallery .clip-tile { display:inline-flex; width:76px; height:76px; vertical-align:top; margin:3px; padding:0; border:1px solid #51627c; border-radius:6px; overflow:hidden; background:#101a29; align-items:center; justify-content:center; cursor:pointer; }

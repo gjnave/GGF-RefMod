@@ -13,7 +13,7 @@ Use Windows x64 with an NVIDIA GPU and a driver compatible with CUDA 13.0. Insta
 1. Clone this release from GitHub and enter its folder.
 
    ```bat
-   git clone --branch v0.11.4 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
+   git clone --branch v0.11.5 --depth 1 https://github.com/gjnave/GGF-RefMod.git Minimax-Refmod
    cd Minimax-Refmod
    ```
 
@@ -51,7 +51,7 @@ If an update changes Python dependencies, the updater builds a separate environm
 
 ## Models
 
-### Pika H3 Flex (default in 0.11.4)
+### Pika H3 Flex (default in 0.11.5)
 
 The default generation preset is **Pika Flex · automatic**. It selects the Pika image-RefMod task when references are selected, or Pika text / first-last otherwise. Pika uses its matching native INT8 model rather than GrizzlyMax INT4. On the first launch of this update, old generation defaults migrate to Pika; the previous controls are retained in the private workspace state. Later explicit preset choices and project reuse remain available.
 
@@ -65,7 +65,7 @@ Release smoke test on the RTX 4090, using the same saved image RefMod, prompt, s
 
 Pika’s published duration range is 5–15 seconds. This app also allows shorter positive durations, snapped upward to the model’s `17k+5` frame grid at 24 fps. New exports match the entered duration at 24 fps: one second is 24 frames, three seconds is 72 frames. Inference still generates the padded model frame count internally; the app trims video and audio together before saving. Older queued jobs without the explicit export length retain their original behavior. Changing presets or references preserves the duration you entered. The Gradio field no longer applies a five-second minimum; backend validation still requires a positive duration and limits Pika to 15 seconds. Start at 0.6 MP / 5 seconds. The initial real-GPU tests on an RTX 4090 produced 124-frame 1024×576 MP4s with native 32 kHz audio in both modes. Text mode took 100.95 seconds with 20,642 MiB peak PyTorch reserved memory; one saved-image RefMod took 81.61 seconds with 20,664 MiB. These are measurements of this configuration, not whole-device VRAM minima or a benchmark against Turbo. 12/16 GB support has not been validated here. VSA and Semantic Bridge are not part of these presets.
 
-The 0.11.4 release includes Pika, favorites, thumbnail pagination, shot lineups, MP4 stitching and app updates. The member ZIP contains only the Windows entry points and notices; INSTALL.bat fetches pinned source and models remain managed inside the app.
+The 0.11.5 release includes Pika, favorites, thumbnail pagination, shot lineups, MP4 stitching and app updates. The member ZIP contains only the Windows entry points and notices; INSTALL.bat fetches pinned source and models remain managed inside the app.
 
 References: [Pika Labs model card](https://huggingface.co/Pika-Labs/Pika-H3-Flex), [native Comfy tutorial](https://docs.comfy.org/tutorials/video/pika/pika-h3-flex), and [the supplied community workflow](https://huggingface.co/Thelocallab/Pika-H3-Flex-ComfyUI-Workflow).
 
@@ -100,7 +100,7 @@ Under **Generation preset**, **Pika Flex · automatic** is the default. For vide
 
 Open **LoRAs (optional)** to select up to two additional MiniMax H3 video adapters and set their strengths independently. Use **Browse for LoRA** and **Link LoRA** on the PC to reuse a local `.safetensors` file in place. Files already under `models/loras` appear with **Refresh LoRA list**. Choose **No LoRA** to clear a slot. The selected adapters affect both generation and optional refinement. A strength of zero skips the adapter. Choose **Custom steps** when using your own speed LoRA.
 
-Choose up to eight RefMods. Beside **Scene and sound**, click a RefMod-name shortcut to insert a phrase such as `The Character from <character_alex_visual>` at the cursor. The shortcut uses the selected file name without `.safetensors`; bundle members use their saved reference names. Audio shortcuts insert `Using the exact voice, tone, and vocal characteristics from <voice_refmod_name>`. The numbered reference map remains visible to show the selection order. Include motion, camera direction, dialogue, SFX, and music. Optional first/last images provide keyframes. A shared strength and retention control adjust the chosen references.
+Choose up to eight RefMods. Beside **Scene and sound**, click a RefMod-name shortcut to insert a tag such as `<character_alex_visual>` at the cursor. The shortcut uses the selected file name without `.safetensors`; bundle members use their saved reference names. Audio shortcuts insert `Using the exact voice, tone, and vocal characteristics from <voice_refmod_name>`. The numbered reference map remains visible to show the selection order. Include motion, camera direction, dialogue, SFX, and music. Optional first/last images provide keyframes. A shared strength and retention control adjust the chosen references.
 
 Click **Generate Video** for the first submission. While it runs, change the prompt or settings and click **Add to queue**. Each submission saves its inputs and seed, and the app runs them in order on one GPU. Every finished clip appears in the thumbnail strip, newest first, including the clip in the main player. Click a thumbnail to select it. Each newly finished clip becomes the active video in the main player. All thumbnails stay in the strip, and you can click any one to view it.
 
@@ -128,7 +128,7 @@ Select the checkbox on each output thumbnail, or click **Add to lineup** beneath
 
 Click **Stitch lineup into MP4** to combine at least two shots into one downloadable video. The export uses the first shot’s canvas at 24 fps, fits other aspect ratios with padding, keeps their audio and fills missing audio with silence. Exports and their shot-order receipts are saved in `outputs/Stitched videos/`. The latest export preview and download return when the app opens again. **Clear stitched preview** dismisses just that preview while keeping your shot selection. Both clear controls leave exported MP4 files saved on disk, and cleared previews stay dismissed after restarting.
 
-To export the selected video as a looping GIF, click **Convert to GIF**, then **Preview GIF** or **Download GIF**. GIFs contain the full clip without audio and are saved in `outputs/GIFs/` at up to 12 frames per second and 640 pixels on the longest side. The original video stays in the gallery.
+To export the selected video as a looping GIF, optionally open **GIF caption (optional)** and enter a bottom caption. Choose **Arial**, **Times New Roman**, or **Courier New**; captions wrap to fit and appear over a dark background. Leave the caption blank for the original video without text. Click **Convert to GIF**, then **Preview GIF** or **Download GIF**. GIFs contain the full clip without audio and are saved in `outputs/GIFs/` at up to 12 frames per second and 640 pixels on the longest side. The original video stays in the gallery.
 
 Turbo uses the supplied workflow's FL2V eight-step adapter, `res_multistep` sampler, simple schedule, and 12/3 video/audio sigma shifts. The seed defaults to **Random**. Leave it blank for a fresh seed on every Generate, or enter a number to reuse it across runs and reloads. The generated seed appears in the result details. Sequential videos increment the starting seed within a batch.
 
@@ -162,3 +162,7 @@ Phone access is optional and off by default. Settings can enable a separate LAN 
 - [Refiner](https://huggingface.co/Kijai/MiniMax-H3-experimental).
 
 See `THIRD-PARTY-NOTICES.md` and bundled upstream licenses. Model licenses remain separate.
+
+## Delete saved RefMods
+
+Open the **RefMod library** tab on the PC, select one or more files, tick the Recycle Bin confirmation and choose **Delete selected RefMods**. Files go through the same recoverable Windows Recycle Bin operation as output deletion. RefMods needed by running or queued generations are protected. The generation selector refreshes and retains its other selected references. This does not alter Windows Recycle Bin settings.

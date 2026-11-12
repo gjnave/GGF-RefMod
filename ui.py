@@ -214,6 +214,18 @@ def refresh_library(selected):
     return reference_selection(selected)
 
 
+@guarded
+def manage_refmods(names,confirmed,selected,remote):
+    if remote:raise ValueError('Delete RefMods from the PC interface.')
+    if not confirmed:raise ValueError('Confirm that the selected RefMods should move to the Windows Recycle Bin.')
+    removed,errors=runtime.delete_refmods(names)
+    available=library()
+    message=f'Moved {len(removed)} RefMod(s) to the Windows Recycle Bin. Restore them there if needed.' if removed else 'No RefMods were moved.'
+    if errors:message+='\n\nCould not move:\n\n'+'\n\n'.join(errors)
+    return (gr.update(choices=available,value=[name for name in names or [] if name in available]),
+            reference_selection([name for name in selected or [] if name not in removed]),False,message)
+
+
 def lora_menus(first,second):
     choices=video_loras.choices()
     available={value for _,value in choices}
@@ -509,10 +521,10 @@ def stitch_lineup(token,progress=gr.Progress()):
     except (OSError,ValueError,av.error.FFmpegError) as exc:raise gr.Error(f'Could not stitch the lineup: {exc}') from exc
 
 
-def convert_to_gif(token,key):
+def convert_to_gif(token,key,caption='',font='Arial'):
     import gif_export
     try:
-        path=gif_export.export(runtime.workspace_clip_path(token,key),loop=True)
+        path=gif_export.export(runtime.workspace_clip_path(token,key),loop=True,caption=caption,font=font)
     except (OSError,ValueError,IndexError) as exc:
         raise gr.Error(f'GIF export failed: {exc}') from exc
     url=html.escape(media_url(path),quote=True)
@@ -731,6 +743,9 @@ def build_ui(remote=False):
                         with gr.Row():
                             reuse_prompt=gr.Button('Reuse prompt & settings',size='sm',elem_id='reuse-active-prompt')
                             gif_button=gr.Button('Convert to GIF',size='sm',elem_id='convert-to-gif')
+                        with gr.Accordion('GIF caption (optional)',open=False):
+                            gif_caption=gr.Textbox(label='Caption',placeholder='Add a caption to the bottom of the GIF',lines=2)
+                            gif_font=gr.Dropdown(['Arial','Times New Roman','Courier New'],value='Arial',filterable=False,label='Caption font')
                         gif_result=gr.HTML('')
                         gallery=gr.HTML('',elem_id='clip-gallery',js_on_load=(cfg.APP/'assets/clip-gallery.js').read_text(encoding='utf-8'))
                         gr.HTML('<div class="clip-navigation-bar"><button type="button" class="clips-prev" aria-label="Previous thumbnail page">Previous</button><span class="clip-page-status" aria-live="polite"></span><button type="button" class="clips-next" aria-label="Next thumbnail page">Next</button></div>',elem_id='clip-navigation')
@@ -774,11 +789,19 @@ def build_ui(remote=False):
                     with gr.Row(visible=False) as upscale_options:
                         upmp=gr.Slider(.2,4,value=1.2,step=.1,label='Upscaled megapixels')
                         refinesteps=gr.Slider(1,8,value=2,step=1,label='Refinement steps')
-                    gr.Markdown('Duration snaps upward to the H3 17k+5 frame grid at 24 fps. Long clips and large canvases use more memory. Upscale uses a learned latent upscaler and preserves the generated audio.')
+                    gr.Markdown('Exports match the entered duration at 24 fps. Long clips and large canvases use more memory. Upscale uses a learned latent upscaler and preserves the generated audio.')
                 with gr.Accordion('Import existing RefMods',open=False):
                     imports=gr.File(file_count='multiple',file_types=['.safetensors'],label='RefMod files',elem_id='ref-import')
                     import_view=gr.Textbox(label='Selected RefMods',interactive=False,visible=False)
                     import_button=gr.Button('Add to library');import_status=gr.Markdown()
+            with gr.Tab('RefMod library',id='library') as library_tab:
+                gr.Markdown('### Manage saved RefMods\nChoose one or more RefMods to remove. Files go to the Windows Recycle Bin, where they can be restored. RefMods used by running or queued generations are protected.',elem_id='refmod-manager-intro')
+                manager_selected=gr.Dropdown(library(),multiselect=True,value=[],label='Saved RefMods',elem_id='refmod-manager',interactive=not remote)
+                manager_refresh=gr.Button('Refresh RefMods')
+                manager_confirm=gr.Checkbox(False,label='Move the selected RefMods to the Windows Recycle Bin',interactive=not remote)
+                manager_delete=gr.Button('Delete selected RefMods',variant='stop',interactive=not remote)
+                manager_status=gr.Markdown('Choose RefMods, confirm, then click Delete selected RefMods.',elem_id='refmod-manager-status')
+                if remote:gr.Markdown('RefMod deletion is available on the PC interface.')
             with gr.Tab('Settings',id='settings'):
                 with gr.Group(visible=not remote):
                     gr.Markdown('### Output gallery')
@@ -868,6 +891,10 @@ def build_ui(remote=False):
                               queue=False)
         for stop in (stop1,stop2,stop_models):stop.click(guarded(runtime.stop),token,activity,queue=False)
         refresh.click(refresh_library,selected,selected,queue=False)
+        manager_refresh.click(lambda names:gr.update(choices=library(),value=[n for n in names or [] if n in library()]),manager_selected,manager_selected,queue=False)
+        library_tab.select(lambda names:gr.update(choices=library(),value=[n for n in names or [] if n in library()]),manager_selected,manager_selected,queue=False)
+        manager_selected.input(lambda:False,None,manager_confirm,queue=False)
+        manager_delete.click(lambda names,confirmed,chosen:manage_refmods(names,confirmed,chosen,remote),[manager_selected,manager_confirm,selected],[manager_selected,selected,manager_confirm,manager_status],concurrency_id='refmod-delete',concurrency_limit=1)
         refmod_sort.click(reference_action,[token,selected],[selected,replace_panel,replace_target,replacement],queue=False,show_progress='hidden')
         replacement.input(replace_refmod,[token,selected,replace_target,replacement],[selected,replace_panel,replace_target],queue=False,show_progress='hidden')
         cancel_replace.click(lambda:(gr.update(interactive=True),gr.update(visible=False),''),None,[selected,replace_panel,replace_target],queue=False)
@@ -905,7 +932,7 @@ def build_ui(remote=False):
         stitched.click(clear_stitched_preview,token,[stitched,lineup,lineup_marker],queue=False,show_progress='hidden')
         timer.tick(lineup_view,[token,lineup_marker],[lineup,lineup_marker],queue=False,show_progress='hidden')
         stitch_button.click(stitch_lineup,token,stitched,concurrency_id='shot-stitch',concurrency_limit=1)
-        gif_button.click(convert_to_gif,[token,pinned_key],gif_result,js="(t,k)=>[t,document.querySelector('#clip-player video')?.dataset.key||'']",concurrency_limit=1,show_progress='full')
+        gif_button.click(convert_to_gif,[token,pinned_key,gif_caption,gif_font],gif_result,js="(t,k,c,f)=>[t,document.querySelector('#clip-player video')?.dataset.key||'',c,f]",concurrency_limit=1,show_progress='full')
         timer.tick(clip_gallery,[token,gallery_keys,pinned_key],[gallery,gallery_keys],js="(t,k,p)=>[t,k,sessionStorage.getItem('minimax-refmod-gallery:'+localStorage.getItem('minimax-refmod-workspace'))||'']",queue=False,show_progress='hidden')
         timer.tick(queue_view,[token,queue_marker],[queue_panel,queue_marker],queue=False)
     return ui
