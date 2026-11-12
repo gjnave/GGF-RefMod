@@ -9,7 +9,7 @@ OUTPUTS = APP / 'outputs'
 LIBRARY = MODELS / 'refmods'
 MANIFEST = json.loads((APP / 'models.lock.json').read_text())
 FILES = {x['key']: x for x in MANIFEST}
-VERSION = '0.11.3'
+VERSION = '0.11.4'
 DEFAULT_PRESET = 'pika_auto'
 
 # (UI label, managed adapter, fixed steps, first-pass sampler, video shift)

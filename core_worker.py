@@ -122,6 +122,21 @@ def prepare_video_output(name):
         path.rename(path.with_name(path.stem+'.interrupted-'+uuid.uuid4().hex[:8]+path.suffix))
     return path
 
+def trim_output(request,images,audio):
+    """Keep sampling on H3's frame grid; export the requested video/audio length."""
+    wanted=request.get('output_frames')
+    if wanted is None:return images,audio
+    if type(wanted) is not int or not 1<=wanted<=len(images):
+        raise ValueError('Requested export length is outside the generated video.')
+    images=images[:wanted]
+    samples=round(wanted*int(audio['sample_rate'])/24)
+    waveform=audio['waveform'][...,:samples]
+    if waveform.shape[-1]<samples:
+        import torch.nn.functional as functional
+        waveform=functional.pad(waveform,(0,samples-waveform.shape[-1]))
+    return images,dict(audio,waveform=waveform)
+
+
 def generate(request,engine):
     torch,nodes,ref,h3,sampling,upscale,video=engine
     request=dict(request,preset=pika_profile.resolve(saved_preset(request),request.get('mods',[])))
@@ -216,6 +231,7 @@ def generate(request,engine):
         emit('stage',message='Decoding audio',phase='decode_audio')
         from comfy_extras.nodes_audio import vae_decode_audio
         audio=vae_decode_audio(audio_vae,latent)
+        images,audio=trim_output(request,images,audio)
         emit('stage',message='Saving MP4',phase='save')
         output=video.CreateVideo.execute(images,24.0,audio,bit_depth=8,color_space='sRGB')[0]
         metadata={'prompt':request['prompt'],'seed':str(request['seed']),'preset':PRESETS[preset][0]}
@@ -225,11 +241,11 @@ def generate(request,engine):
             metadata['loras']=json.dumps([(Path(a['path']).name,a['strength']) for a in adapters])
         output.save_to(target,metadata=metadata)
     record=dict(model=profile['active'],checkpoint=checkpoint.name,checkpoint_bytes=checkpoint.stat().st_size,seed=str(request['seed']),
-                frames=int(images.shape[0]),width=int(images.shape[2]),height=int(images.shape[1]),fps=24)
+                frames=int(images.shape[0]),width=int(images.shape[2]),height=int(images.shape[1]),fps=24,sampling_frames=request['frames'])
     if pika_profile.enabled(preset):
         record.update(pika_adapter=model_name(adapter),sampler='lcm',sigmas=list(pika_profile.SIGMAS),
                       torch_peak_reserved_mib=round(torch.cuda.max_memory_reserved()/1024**2))
-    return {'video':target,'files':[target],'seed':request['seed'],'frames':request['frames'],'record':record,'reference_map':reference_map(mods),'details':f"Saved {record['frames']} frames at 24 fps. Seed {request['seed']}."}
+    return {'video':target,'files':[target],'seed':request['seed'],'frames':record['frames'],'record':record,'reference_map':reference_map(mods),'details':f"Saved {record['frames']} frames at 24 fps. Seed {request['seed']}."}
 
 def load_image(path):
     from PIL import Image,ImageOps

@@ -197,7 +197,7 @@ def generate(token,prompt,selected,strength,retention,aspect,mp,duration,seed,pr
         video_profile.linked_path(profile)
     adapter,nsteps,_,_=cfg.sampling_settings(preset,steps)
     req=dict(kind='generate',video_profile=profile,prompt=prompt,mods=paths,strengths=[strength]*len(paths),retention=retention,width=w,height=h,frames=frames,
-        seed=cfg.seed_value(seed),preset=preset,steps=nsteps,upscale=bool(upscale),
+        seed=cfg.seed_value(seed),preset=preset,steps=nsteps,upscale=bool(upscale),output_frames=max(1,round(float(duration)*24)),
         up_width=uw,up_height=uh,refine_steps=cfg.numeric(refinesteps,1,8,'Refinement steps',True),first_frame=first,last_frame=last,
         batch=cfg.numeric(batch,1,8,'Batch count',True))
     req['loras']=video_loras.selection([(lora1,weight1),(lora2,weight2)])
@@ -703,7 +703,7 @@ def build_ui(remote=False):
                         prompt=gr.Textbox(label='Scene and sound',elem_id='scene-and-sound',lines=8,placeholder='The character from <Picture 1> walks through a rainy street. Gentle camera tracking. Footsteps and distant traffic.')
                         with gr.Row():
                             aspect=gr.Dropdown(['Portrait 9:16','Landscape 16:9','Square 1:1'],value='Portrait 9:16',filterable=False,label='Aspect ratio')
-                        duration=gr.Number(value=5,label='Duration in seconds')
+                        duration=gr.Number(value=5,label='Duration in seconds',info='Export length at 24 fps. Enter 1 for a one-second clip.')
                         preset=gr.Radio([(v[0],k) for k,v in cfg.PRESETS.items()],value=cfg.DEFAULT_PRESET,label='Generation preset',info='Pika automatic is the default. Use Turbo or Fast Preview for video/audio RefMods.')
                         pika_notice=gr.Markdown('',visible=False,elem_id='pika-note')
                         with gr.Accordion('LoRAs (optional)',open=False):

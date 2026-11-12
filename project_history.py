@@ -82,5 +82,5 @@ def reuse_values(p,library,adapters):
     if missing:raise ValueError('Restore these project inputs before reusing: '+', '.join(missing))
     seed=p['seed'] if cfg.seed_input(f.get('seed_input','')) else ''
     return dict(prompt=r['prompt'],selected=names,strength=f.get('strength',(r.get('strengths') or [1])[0]),retention=r.get('retention',1),
-                aspect=aspect,mp=mp,duration=f.get('duration',r['frames']/24),seed=seed,preset=cfg.saved_preset(r),steps=f.get('custom_steps',r['steps']),
+                aspect=aspect,mp=mp,duration=f.get('duration',r.get('output_frames',r['frames'])/24),seed=seed,preset=cfg.saved_preset(r),steps=f.get('custom_steps',r['steps']),
                 upscale=r['upscale'],upmp=upmp,refinesteps=r.get('refine_steps',2),frames=frames,slots=slots,model=model,batch=r.get('batch',1))
