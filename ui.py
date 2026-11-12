@@ -179,7 +179,7 @@ def create(token,media,audio,name,mode,concept,description,resolution,pool,laten
 def generate(token,prompt,selected,strength,retention,aspect,mp,duration,seed,preset,steps,upscale,upmp,refinesteps,first,last,batch,lora1='',weight1=1,lora2='',weight2=1,model='Use Settings'):
     if not prompt.strip():raise ValueError('Describe the scene, motion, and sound.')
     chosen_preset=preset
-    preset=pika_profile.resolve(preset,selected)
+    preset=pika_profile.resolve(preset,selected if float(strength)>0 else [])
     w,h=cfg.canvas(aspect,mp);uw,uh=cfg.canvas(aspect,upmp)
     frames=cfg.frames_for(duration)
     if upscale and uw*uh<=w*h:raise ValueError('Upscale megapixels must be larger than the working canvas.')
@@ -702,7 +702,7 @@ def build_ui(remote=False):
                 gr.Markdown('**Select saved RefMods and describe the scene, movement, dialogue, and sound.** Use the reference labels below in your prompt. Ctrl+Enter starts the visible Create or Generate action.')
                 with gr.Row(elem_id='generation-layout'):
                     with gr.Column(elem_id='generation-inputs'):
-                        selected=gr.Dropdown(library(),multiselect=True,max_choices=8,label='RefMod library (choose up to 8)',info='Use ↑ / ↓ on each selected label to change reference order. Double-click its name to replace it or swap with another selected RefMod.',elem_id='refmod-library',value=[])
+                        selected=gr.Dropdown(library(),multiselect=True,max_choices=8,label='RefMod library (choose up to 8)',info='Use ↑ / ↓ to change order; double-click a name to replace it. Every active member of a selected bundle is used, even when its tag is not in the prompt.',elem_id='refmod-library',value=[])
                         refmod_sort=gr.HTML('',elem_id='refmod-order',
                             js_on_load=(cfg.APP/'assets/refmod-order.js').read_text(encoding='utf-8'))
                         replace_target=gr.State('')
@@ -716,7 +716,7 @@ def build_ui(remote=False):
                         with gr.Row():
                             aspect=gr.Dropdown(['Portrait 9:16','Landscape 16:9','Square 1:1'],value='Portrait 9:16',filterable=False,label='Aspect ratio')
                         duration=gr.Number(value=5,label='Duration in seconds',info='Export length at 24 fps. Enter 1 for a one-second clip.')
-                        preset=gr.Radio([(v[0],k) for k,v in cfg.PRESETS.items()],value=cfg.DEFAULT_PRESET,label='Generation preset',info='Pika automatic is the default. Use Turbo or Fast Preview for video/audio RefMods.')
+                        preset=gr.Radio([(v[0],k) for k,v in cfg.PRESETS.items()],value=cfg.DEFAULT_PRESET,label='Generation preset',info='Pika automatic is the default and supports image, video, audio and mixed RefMods.')
                         pika_notice=gr.Markdown('',visible=False,elem_id='pika-note')
                         with gr.Accordion('LoRAs (optional)',open=False):
                             gr.Markdown('Choose MiniMax H3 video LoRAs. Set strength to 0 to skip an adapter. Select Custom steps if you supply your own speed LoRA.')
@@ -858,12 +858,11 @@ def build_ui(remote=False):
         media.change(lambda items:previews.render(items,media_view),media,media_view,trigger_mode='always_last',show_progress='minimal')
         def change_preset(name,seconds,references):
             pika=pika_profile.enabled(name)
-            reference=name=='pika_refs' or (name=='pika_auto' and bool(references))
-            adapter_updates=[gr.update(value='',interactive=False) if pika else gr.update(interactive=True) for _ in (0,1)]
-            weight_updates=[gr.update(interactive=not pika) for _ in (0,1)]
-            frame_updates=[gr.update(value=None,interactive=False) if reference else gr.update(interactive=True) for _ in (0,1)]
-            selected_update=gr.update(value=[],interactive=False) if name=='pika' else gr.update(interactive=True)
-            upscale_update=gr.update(value=False,interactive=False) if pika else gr.update(interactive=True)
+            adapter_updates=[gr.update(interactive=True) for _ in (0,1)]
+            weight_updates=[gr.update(interactive=True) for _ in (0,1)]
+            frame_updates=[gr.update(interactive=True) for _ in (0,1)]
+            selected_update=gr.update(interactive=True)
+            upscale_update=gr.update(interactive=True)
             return [gr.update(visible=name=='custom'),gr.update(value=pika_profile.note(name),visible=pika),upscale_update,
                     adapter_updates[0],weight_updates[0],adapter_updates[1],weight_updates[1],*frame_updates,selected_update,
                     gr.update(minimum=None,maximum=None)]

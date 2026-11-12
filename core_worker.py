@@ -56,6 +56,7 @@ def load_mods(paths,strengths):
     from refmod.bundle import load_bundle
     mods=[]
     for path,strength in zip(paths,strengths):
+        if strength<=0:continue
         stem=str(Path(path).with_suffix(''))
         meta=read_refmod_meta(stem)
         group=load_bundle(stem) if meta.get('kind')=='bundle' else [(H3RefMod.load(stem),1.0)]
@@ -139,7 +140,8 @@ def trim_output(request,images,audio):
 
 def generate(request,engine):
     torch,nodes,ref,h3,sampling,upscale,video=engine
-    request=dict(request,preset=pika_profile.resolve(saved_preset(request),request.get('mods',[])))
+    active=[path for path,strength in zip(request.get('mods',[]),request.get('strengths',[])) if strength>0]
+    request=dict(request,preset=pika_profile.resolve(saved_preset(request),active))
     pika_profile.validate(request)
     from refmod.prompt import reference_map
     profile=request.get('video_profile',{'active':video_profile.INT8})
@@ -189,10 +191,24 @@ def generate(request,engine):
     with torch.no_grad():
         if preset=='pika_refs':
             positive,latent=h3.MiniMaxH3ReferenceToVideo.execute(clip,request['prompt'],request['width'],request['height'],request['frames'],vae=vae,audio_vae=audio_vae)
+            for image,index in ((first,0),(last,request.get('output_frames',request['frames'])-1)):
+                if image is not None:
+                    positive=h3.MiniMaxH3AddGuide.execute(positive,latent,index,vae=vae,image=image)[0]
         else:
             positive,latent=h3.MiniMaxH3ImageToVideo.execute(clip,vae,request['prompt'],request['width'],request['height'],request['frames'],first,last)
+            if last is not None and request.get('output_frames',request['frames'])!=request['frames']:
+                # Export may be shorter than H3's padded sampling grid.
+                import node_helpers
+                keyframes=[dict(item) for item in positive[0][1].get('minimax_keyframes',[])]
+                for item in keyframes:
+                    if item['resolved_frame_index']==request['frames']-1:
+                        item['resolved_frame_index']=request['output_frames']-1
+                positive=node_helpers.conditioning_set_values(positive,{'minimax_keyframes':keyframes})
         if mods:
             positive=ref.MiniMaxH3RefModApply.execute(positive,mods,retention=request['retention'],curve_direction='constant',curve_shape='linear',curve_value=1.0,override=False,scramble_mode='shuffle',scramble_keep=1)[0]
+        from collections import Counter
+        reference_kinds=dict(Counter(mod.kind for mod,strength in mods if strength>0))
+        emit('conditioning',reference_kinds=reference_kinds,keyframe_indices=[item['resolved_frame_index'] for item in positive[0][1].get('minimax_keyframes',[])])
         noise=sampling.RandomNoise.execute(request['seed'])[0]
         sampler=sampling.KSamplerSelect.execute(sampler_name)[0]
         if pika_profile.enabled(preset):
@@ -209,6 +225,16 @@ def generate(request,engine):
             mm.unload_all_models()
             upmodel=upscale.LatentUpscaleModelLoader.execute(model_name('upscaler'))[0]
             latent=h3.MiniMaxH3LatentUpscaleWithModel.execute(upmodel,latent,request['up_width'],request['up_height'])[0]
+            # Endpoint latents must share the enlarged target grid during refinement.
+            # Reusing the first pass's smaller guides produces a packed-layout mismatch.
+            if first is not None or last is not None:
+                import node_helpers
+                positive=node_helpers.conditioning_set_values(positive,{'minimax_keyframes':[]})
+                for image,index in ((first,0),(last,request.get('output_frames',request['frames'])-1)):
+                    if image is not None:
+                        if index==0 and preset!='pika_refs':
+                            image=h3._resize(image[:1],request['up_width'],request['up_height'],'disabled')
+                        positive=h3.MiniMaxH3AddGuide.execute(positive,latent,index,vae=vae,image=image)[0]
             v,a=latent['samples'].unbind()
             latent['noise_mask']=comfy.nested_tensor.NestedTensor((torch.ones_like(v),torch.zeros_like(a)))
             # Fresh base avoids stacking the first-pass FL2V turbo adapter with DMD.
@@ -241,7 +267,7 @@ def generate(request,engine):
             metadata['loras']=json.dumps([(Path(a['path']).name,a['strength']) for a in adapters])
         output.save_to(target,metadata=metadata)
     record=dict(model=profile['active'],checkpoint=checkpoint.name,checkpoint_bytes=checkpoint.stat().st_size,seed=str(request['seed']),
-                frames=int(images.shape[0]),width=int(images.shape[2]),height=int(images.shape[1]),fps=24,sampling_frames=request['frames'])
+                frames=int(images.shape[0]),width=int(images.shape[2]),height=int(images.shape[1]),fps=24,sampling_frames=request['frames'],reference_kinds=reference_kinds)
     if pika_profile.enabled(preset):
         record.update(pika_adapter=model_name(adapter),sampler='lcm',sigmas=list(pika_profile.SIGMAS),
                       torch_peak_reserved_mib=round(torch.cuda.max_memory_reserved()/1024**2))

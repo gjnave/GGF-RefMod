@@ -50,6 +50,9 @@ def start(token,request,controls=None):
         if SHUTTING_DOWN:raise ValueError('The app is shutting down.')
         saved=load_workspace(token)
         generation=request['kind']=='generate'
+        if generation:
+            import pika_profile
+            pika_profile.preflight(request)
         if ACTIVE and not generation: raise ValueError('An app job is already running. Wait for it to finish or stop it.')
         jobid=datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:8]
         folder=JOBS/jobid;folder.mkdir()
