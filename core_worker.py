@@ -294,7 +294,10 @@ def main():
             if probe:
                 result={'imports':'ok','server_loaded':'server' in sys.modules}
             else:
-                if request['kind']=='create':result=create(request,engine)
+                if request['kind']=='facefix':
+                    import facefix
+                    result=facefix.run(request,engine,emit)
+                elif request['kind']=='create':result=create(request,engine)
                 else:
                     results=[]
                     for index in range(request.get('resume_from',0),request.get('batch',1)):

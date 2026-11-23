@@ -168,3 +168,9 @@ See `THIRD-PARTY-NOTICES.md` and bundled upstream licenses. Model licenses remai
 ## Delete saved RefMods
 
 Open the **RefMod library** tab on the PC, select one or more files, tick the Recycle Bin confirmation and choose **Delete selected RefMods**. Files go through the same recoverable Windows Recycle Bin operation as output deletion. RefMods needed by running or queued generations are protected. The generation selector refreshes and retains its other selected references. This does not alter Windows Recycle Bin settings.
+
+## FaceFix
+
+Select a gallery clip in Generate Video or upload an MP4 in the FaceFix tab, then click **Fix faces in video**. Downloads a separate MP4 from the completed job. Uses the active H3 base, the video VAE, text encoder and 8-step Turbo adapter. The face detector is included. No ComfyUI server or separate upscaler is required.
+
+FaceFix follows one detected face per shot, starting with the largest. It processes moving 384-pixel crops in groups of up to 22 frames, applies two low-noise H3 sampling steps and blends the result back. Frames without a match pass through. The original audio streams are copied. Very small, turned or obscured faces may be missed. If two subjects cross, check the result for tracking changes.

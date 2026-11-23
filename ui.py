@@ -661,6 +661,28 @@ def stop_server(confirmed):
     threading.Thread(target=end,daemon=True).start()
     return 'Stopping both app interfaces. Restart with RUN.bat on the PC.'
 
+def start_facefix(token, key, upload):
+    try:
+        path = upload or runtime.workspace_clip_path(token, key)
+        job = runtime.start(token, dict(kind='facefix', media=[str(path)]))
+        return job, 'Starting FaceFix…', None
+    except (OSError, ValueError, IndexError) as exc:
+        raise gr.Error(str(exc)) from exc
+
+
+def facefix_status(token, job):
+    if not job:
+        return gr.skip(), gr.skip(), gr.skip()
+    state = runtime.current(token)
+    if not state or state['id'] != job:
+        state = json.loads((cfg.JOBS / job / 'status.json').read_text(encoding='utf-8'))
+    if state['token'] != token:
+        return gr.skip(), gr.skip(), ''
+    result = state.get('result', {})
+    finished = state['status'] not in ('running', 'queued')
+    return result.get('details') or state['stage'], result.get('video') or gr.skip(), '' if finished else gr.skip()
+
+
 def build_ui(remote=False):
     settings=cfg.read_settings();logo=base64.b64encode((cfg.APP/'assets/ggf-brain-logo.png').read_bytes()).decode()
     missing=any(m['status']=='Missing or incomplete' for m in displayed_models())
@@ -794,6 +816,13 @@ def build_ui(remote=False):
                     imports=gr.File(file_count='multiple',file_types=['.safetensors'],label='RefMod files',elem_id='ref-import')
                     import_view=gr.Textbox(label='Selected RefMods',interactive=False,visible=False)
                     import_button=gr.Button('Add to library');import_status=gr.Markdown()
+            with gr.Tab('FaceFix',id='facefix'):
+                gr.Markdown('Refine the largest tracked face in a shot using MiniMax H3. Upload an MP4 or select a clip in Generate Video. The result is a new MP4 with the original audio.')
+                fix_input=gr.File(label='Optional MP4 (overrides gallery selection)', file_types=['.mp4'], type='filepath')
+                fix_button=gr.Button('Fix faces in video')
+                fix_job=gr.State('')
+                fix_status=gr.Textbox(label='FaceFix status',interactive=False)
+                fix_output=gr.File(label='Download refined MP4',interactive=False)
             with gr.Tab('RefMod library',id='library') as library_tab:
                 gr.Markdown('### Manage saved RefMods\nChoose one or more RefMods to remove. Files go to the Windows Recycle Bin, where they can be restored. RefMods used by running or queued generations are protected.',elem_id='refmod-manager-intro')
                 manager_selected=gr.Dropdown(library(),multiselect=True,value=[],label='Saved RefMods',elem_id='refmod-manager',interactive=not remote)
@@ -921,7 +950,10 @@ def build_ui(remote=False):
         restored=ui.load(restore,browser_token,[token,prompt,selected,aspect,mp,duration,seed,preset,upscale,media,audio,name,mode,concept,description,first,last,*slots,steps,run_model,strength,retention,upmp,refinesteps,batch],js=RESTORE_JS,queue=False)
         restored.success(stitched_result,token,stitched,queue=False)
         restored.success(change_preset,[preset,duration,selected],[steps,pika_notice,upscale,*slots,first,last,selected,duration],queue=False,show_progress='hidden')
+        fix_button.click(start_facefix,[token,pinned_key,fix_input],[fix_job,fix_status,fix_output],
+                         js="(t,k,f)=>[t,document.querySelector('#clip-player video')?.dataset.key||sessionStorage.getItem('minimax-refmod-gallery:'+localStorage.getItem('minimax-refmod-workspace'))||'',f]")
         timer=gr.Timer(1)
+        timer.tick(facefix_status,[token,fix_job],[fix_status,fix_output,fix_job],queue=False,show_progress='hidden')
         timer.tick(generation_progress,[token,progress_marker],[generation_bar,progress_marker],queue=False,show_progress='hidden')
         if not remote:
             timer.tick(link_progress,[token,link_job],[link_status,link_job,active_model,models],queue=False,show_progress='hidden')

@@ -13,3 +13,5 @@ Pika H3 Flex adapters are published by Pika Labs and distributed in the pinned C
 INSTALL.bat retrieves the official [aria2 1.37.0 Windows x64 release](https://github.com/aria2/aria2/releases/tag/release-1.37.0) and verifies its archive SHA-256 before extraction. The upstream license and documentation accompany the executable under `runtime/tools`.
 
 Get Going Fast branding and the supplied about/disclaimer assets belong to their respective owner. They do not alter the upstream code or model licenses.
+
+FaceFix includes the YuNet March 2023 face detector from OpenCV Zoo (commit 48b10fa505aeb51fbd127fc60a5c660040e823b7), used under its MIT license in assets/YuNet-LICENSE.txt. https://github.com/opencv/opencv_zoo/tree/48b10fa505aeb51fbd127fc60a5c660040e823b7/models/face_detection_yunet
